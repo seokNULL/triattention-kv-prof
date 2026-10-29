@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that this env can run vllm_runner/run_vllm.py.
+"""Check that this env can run vllm_runner/run_benchmark.py.
 
 Reports package versions, whether the TriAttention vLLM plugin is
 registered, and which models, datasets and calibration stats are present.

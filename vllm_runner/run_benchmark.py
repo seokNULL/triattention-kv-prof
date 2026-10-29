@@ -8,7 +8,7 @@ plugin in ``triattention/vllm`` (installed as a ``vllm.general_plugins`` entry
 point); ``--method fullkv`` disables it.
 
 Example:
-    python vllm_runner/run_vllm.py --model Qwen3-8B --dataset aime24 \\
+    python vllm_runner/run_benchmark.py --model Qwen3-8B --dataset aime24 \\
         --method triattention --budget 2048 --num-samples 1 --max-examples 3
 """
 
@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging.config
 import os
+import re
 import subprocess
 import sys
 import time
@@ -45,6 +47,7 @@ RUN_SEED_STRIDE = 1_000_000
 # HF generate() falls back to top_k=50 when the model's generation_config
 # does not set one; mirror that so both paths sample identically.
 HF_DEFAULT_TOP_K = 50
+COMPRESSION_RE = re.compile(r"TriAttention compression applied .*reclaimed_blocks=(\S+)")
 
 
 def parse_args() -> argparse.Namespace:
@@ -166,6 +169,68 @@ def run_dir_for(settings: dict, args: argparse.Namespace) -> Path:
     )
 
 
+def configure_logging(run_dir: Path) -> Path:
+    """Show ``triattention.*`` logs and copy them to ``run_dir/triattention.log``.
+
+    vLLM only attaches a handler to the ``vllm`` logger, so the plugin's
+    activation and compression messages are otherwise dropped. vLLM applies
+    VLLM_LOGGING_CONFIG_PATH in every process it starts, including the engine
+    core; if vLLM is already imported here, the config is applied directly.
+    """
+    log_path = run_dir / "triattention.log"
+    log_path.write_text("")
+    if os.environ.get("VLLM_LOGGING_CONFIG_PATH"):
+        return log_path
+    level = os.environ.get("VLLM_LOGGING_LEVEL", "INFO")
+    formatter = {
+        "format": "%(levelname)s %(asctime)s [%(filename)s:%(lineno)d] %(message)s",
+        "datefmt": "%m-%d %H:%M:%S",
+    }
+    config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {"vllm": formatter},
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "vllm",
+                "stream": "ext://sys.stdout",
+            },
+            "triattention_file": {
+                "class": "logging.FileHandler",
+                "formatter": "vllm",
+                "filename": str(log_path),
+            },
+        },
+        "loggers": {
+            "vllm": {"handlers": ["console"], "level": level, "propagate": False},
+            "triattention": {
+                "handlers": ["console", "triattention_file"],
+                "level": level,
+                "propagate": False,
+            },
+        },
+    }
+    config_path = run_dir / "vllm_logging.json"
+    config_path.write_text(json.dumps(config, indent=2))
+    os.environ["VLLM_LOGGING_CONFIG_PATH"] = str(config_path)
+    if "vllm" in sys.modules:
+        logging.config.dictConfig(config)
+    return log_path
+
+
+def summarize_compression(log_path: Path) -> dict:
+    events, reclaimed = 0, 0
+    if log_path.exists():
+        for line in log_path.read_text(errors="replace").splitlines():
+            match = COMPRESSION_RE.search(line)
+            if match:
+                events += 1
+                if match.group(1).isdigit():
+                    reclaimed += int(match.group(1))
+    return {"compression_events": events, "reclaimed_blocks": reclaimed}
+
+
 def configure_plugin_env(settings: dict, args: argparse.Namespace) -> None:
     """Must run before vLLM is imported: the plugin reads these at load time."""
     if settings["method"] == "fullkv":
@@ -264,22 +329,8 @@ def make_record(req: dict, completion, seconds: float) -> dict:
     return record
 
 
-def generate(settings: dict, args: argparse.Namespace, gen_path: Path) -> dict:
-    from transformers import AutoTokenizer
-    from vllm import LLM, SamplingParams
-
-    tokenizer = AutoTokenizer.from_pretrained(settings["model_path"], use_fast=True)
-    requests = build_requests(load_problems(settings), tokenizer, settings)
-    done = load_done(gen_path)
-    pending = [r for r in requests if (r["row"]["index"], r["draw_idx"]) not in done]
-    print(
-        f"[vllm-runner] {len(requests)} requests, {len(requests) - len(pending)} already done, "
-        f"{len(pending)} to run"
-    )
-    if not pending:
-        return {}
-
-    engine_kwargs = {
+def engine_kwargs(settings: dict, args: argparse.Namespace) -> dict:
+    kwargs = {
         "model": settings["model_path"],
         "dtype": "bfloat16",
         "max_model_len": settings["max_length"],
@@ -295,27 +346,47 @@ def generate(settings: dict, args: argparse.Namespace, gen_path: Path) -> dict:
         "disable_log_stats": False,
     }
     if args.max_num_seqs:
-        engine_kwargs["max_num_seqs"] = args.max_num_seqs
+        kwargs["max_num_seqs"] = args.max_num_seqs
     if args.max_num_batched_tokens:
-        engine_kwargs["max_num_batched_tokens"] = args.max_num_batched_tokens
-    llm = LLM(**engine_kwargs)
+        kwargs["max_num_batched_tokens"] = args.max_num_batched_tokens
+    return kwargs
+
+
+def sampling_params(settings: dict, req: dict):
+    from vllm import SamplingParams
+
+    return SamplingParams(
+        n=1,
+        temperature=settings["temperature"],
+        top_p=settings["top_p"],
+        top_k=settings["top_k"],
+        max_tokens=req["max_tokens"],
+        seed=req["seed"],
+    )
+
+
+def generate(settings: dict, args: argparse.Namespace, gen_path: Path) -> dict:
+    from transformers import AutoTokenizer
+    from vllm import LLM
+
+    tokenizer = AutoTokenizer.from_pretrained(settings["model_path"], use_fast=True)
+    requests = build_requests(load_problems(settings), tokenizer, settings)
+    done = load_done(gen_path)
+    pending = [r for r in requests if (r["row"]["index"], r["draw_idx"]) not in done]
+    print(
+        f"[vllm-runner] {len(requests)} requests, {len(requests) - len(pending)} already done, "
+        f"{len(pending)} to run"
+    )
+    if not pending:
+        return {}
+    llm = LLM(**engine_kwargs(settings, args))
 
     total_out, total_seconds = 0, 0.0
     gen_path.parent.mkdir(parents=True, exist_ok=True)
     with gen_path.open("a", encoding="utf-8") as fout:
         for start in range(0, len(pending), args.chunk_size):
             chunk = pending[start : start + args.chunk_size]
-            params = [
-                SamplingParams(
-                    n=1,
-                    temperature=settings["temperature"],
-                    top_p=settings["top_p"],
-                    top_k=settings["top_k"],
-                    max_tokens=r["max_tokens"],
-                    seed=r["seed"],
-                )
-                for r in chunk
-            ]
+            params = [sampling_params(settings, r) for r in chunk]
             prompts = [{"prompt_token_ids": r["prompt_token_ids"]} for r in chunk]
             t0 = time.perf_counter()
             outputs = llm.generate(prompts, params, use_tqdm=True)
@@ -371,9 +442,11 @@ def main() -> None:
     print(f"[vllm-runner] output: {run_dir}")
     print(json.dumps(settings, indent=2))
 
+    log_path = configure_logging(run_dir)
     configure_plugin_env(settings, args)
     stats = generate(settings, args, gen_path)
     if stats:
+        stats.update(summarize_compression(log_path))
         (run_dir / "throughput.json").write_text(json.dumps(stats, indent=2))
         print(f"[vllm-runner] throughput: {stats}")
     if not args.skip_eval:
