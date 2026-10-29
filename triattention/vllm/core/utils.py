@@ -20,6 +20,7 @@ def load_frequency_stats(
     device: torch.device,
     dtype: torch.dtype = torch.bfloat16,
     num_kv_heads: Optional[int] = None,
+    model_path: Optional[Path] = None,
 ) -> Tuple[Dict, Dict]:
     """Load precomputed frequency statistics from file.
 
@@ -27,6 +28,9 @@ def load_frequency_stats(
         stats_path: Path to stats file (.pt or .pth format)
         device: Device to load tensors onto
         dtype: Data type for loaded tensors
+        model_path: Local model directory. R-KV-format stats derive RoPE
+            values from the model config; this takes precedence over the
+            Hub id stored in the stats metadata, which needs network access.
 
     Returns:
         Tuple of (metadata, head_stats)
@@ -99,7 +103,9 @@ def load_frequency_stats(
 
     if is_rkv_format:
         # Convert R-KV format to TriAttention format
-        metadata, head_stats = _convert_rkv_stats(stats, device, dtype, num_kv_heads)
+        metadata, head_stats = _convert_rkv_stats(
+            stats, device, dtype, num_kv_heads, model_path=model_path
+        )
         return metadata, head_stats
 
     # TriAttention format - validate required keys
@@ -139,6 +145,7 @@ def _convert_rkv_stats(
     device: torch.device,
     dtype: torch.dtype,
     num_kv_heads: Optional[int] = None,
+    model_path: Optional[Path] = None,
 ) -> Tuple[Dict, Dict]:
     """Convert R-KV stats format to TriAttention format.
 
@@ -159,6 +166,10 @@ def _convert_rkv_stats(
     """
     rkv_metadata = stats.get("metadata", {})
     rkv_stats = stats.get("stats", {})
+    if model_path is not None and Path(model_path).exists():
+        model_id = str(model_path)
+    else:
+        model_id = rkv_metadata.get("model_name", rkv_metadata.get("model_path"))
 
     # Infer num_layers and num_heads from stats keys
     layer_nums = set()
@@ -207,6 +218,7 @@ def _convert_rkv_stats(
         num_kv_heads = int(meta_kv_heads) if meta_kv_heads else num_attention_heads
 
     gqa_ratio = num_attention_heads // num_kv_heads if num_kv_heads > 0 else 1
+    warned_freq_scale = False
 
     def _derive_inv_freq_fallback() -> Optional[torch.Tensor]:
         """Derive rotary inv_freq from model config when possible.
@@ -226,7 +238,6 @@ def _convert_rkv_stats(
             )
             return inv_freq[:max_freq_count].contiguous()
 
-        model_id = rkv_metadata.get("model_name", rkv_metadata.get("model_path"))
         if model_id:
             try:
                 from transformers import AutoConfig
@@ -248,8 +259,11 @@ def _convert_rkv_stats(
                     return inv_freq.to(device=device, dtype=torch.float32)[
                         :max_freq_count
                     ].contiguous()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "TriAttention could not derive RoPE inv_freq from %s (%s: %s)",
+                    model_id, type(exc).__name__, exc,
+                )
         return None
 
     derived_inv_freq = _derive_inv_freq_fallback()
@@ -293,7 +307,6 @@ def _convert_rkv_stats(
         model's rotary embedding scaling (HF-aligned semantic source). If that
         derivation fails, fall back to ones to keep behavior explicit and safe.
         """
-        model_id = rkv_metadata.get("model_name", rkv_metadata.get("model_path"))
         if model_id:
             try:
                 from transformers import AutoConfig
@@ -324,8 +337,15 @@ def _convert_rkv_stats(
                 else:
                     freq_scale_sq = freq_scale_sq[:layer_freq_count].contiguous()
                 return freq_scale_sq.unsqueeze(0).expand(num_kv_heads, -1).contiguous()
-            except Exception:
-                pass
+            except Exception as exc:
+                nonlocal warned_freq_scale
+                if not warned_freq_scale:
+                    warned_freq_scale = True
+                    logger.warning(
+                        "TriAttention could not derive RoPE frequency scaling from %s "
+                        "(%s: %s); using ones, which changes scores vs. the HF path",
+                        model_id, type(exc).__name__, exc,
+                    )
 
         # Explicit fallback when model-derived scaling is unavailable.
         return torch.ones(

@@ -87,6 +87,7 @@ class TriAttentionCompressor:
                 device=self.config.device,
                 dtype=self.config.compute_dtype,
                 num_kv_heads=self.config.num_kv_heads,  # Pass for GQA mapping
+                model_path=self.config.model_path,
             )
         except FileNotFoundError:
             raise FileNotFoundError(

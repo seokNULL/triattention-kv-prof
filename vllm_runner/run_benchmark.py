@@ -233,6 +233,10 @@ def summarize_compression(log_path: Path) -> dict:
 
 def configure_plugin_env(settings: dict, args: argparse.Namespace) -> None:
     """Must run before vLLM is imported: the plugin reads these at load time."""
+    # Models and data are local; fail fast instead of retrying Hub requests
+    # (e.g. behind a TLS-intercepting proxy).
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     if settings["method"] == "fullkv":
         os.environ["ENABLE_TRIATTENTION"] = "0"
         return
