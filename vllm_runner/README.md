@@ -11,6 +11,7 @@
 | `run_all.sh` | 3개 모델 × 3개 데이터셋 × (fullkv, triattention) 일괄 실행 |
 | `env_check.py` | 버전, plugin 등록, 모델/데이터/통계 파일 존재 여부 확인 |
 | `kv_dump.py` | quick 문제 1개를 생성하면서 paged KV cache와 block table을 파일로 dump |
+| `view_kv_dump.py` | dump를 `layer head token block slot K/V 값...` 행 형태로 출력하거나 CSV/numpy로 저장 |
 | `analyze_kv_dump.py` | dump에서 KV 유사도와 (가상의) hole 비율을 계산하는 예시 분석 |
 | `data/quick.jsonl` | `quick_test.py`, `kv_dump.py`용 문제 8개 (정답은 정수) |
 
@@ -101,6 +102,27 @@ d = torch.load("experiments/kv_dumps/Qwen3-8B/fullkv/problem0/kv.pt")
 k = d["key"][li]            # layer d["layers"][li]: [T, kv_heads, head_dim]
 block_of_token = [d["block_ids"][t // d["block_size"]] for t in range(d["kv_len"])]
 ```
+
+dump 내용을 행 단위 배열로 보기: `view_kv_dump.py`
+
+```bash
+D=experiments/kv_dumps/Qwen3-8B/fullkv/problem0
+python vllm_runner/view_kv_dump.py $D --layer 18 --head 0 --tokens 0:8          # 터미널 표 (앞 8개 dim)
+python vllm_runner/view_kv_dump.py $D --layer 0,18 --kv K --dims 0 --tokens 100:104   # 128개 dim 전부
+python vllm_runner/view_kv_dump.py $D --layer 18 --tokens all --csv kv_l18.csv  # CSV (모든 dim)
+python vllm_runner/view_kv_dump.py $D --layer 18 --npz kv_l18.npz               # numpy float32 배열
+```
+
+```
+layer head token block slot kv piece                d0        d1  ...
+   18    0    15   211   15  K Ġthe            0.0123   -1.2344  ...
+   18    0    16   487    0  K Ġsum            ...
+```
+
+- `--layer`, `--head`, `--tokens`: `18`, `0,18,35`, `0:16`, `all` 형식
+- `--kv K|V|KV`, `--dims N`(0이면 전부), `--precision`
+- CSV 열: `layer, head, token, block, slot, kv, piece, d0 … d127` (선택한 행의 모든 dim)
+- npz: `key`, `value` = `[layer, token, head, dim]` float32와 `layers`, `heads`, `tokens`, `block`, `slot`
 
 `analyze_kv_dump.py`는 출발점이 되는 예시 분석입니다. layer별로 다음을 출력합니다.
 
