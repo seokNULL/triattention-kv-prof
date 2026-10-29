@@ -139,6 +139,8 @@ python scripts/prepare_assets.py --skip-models --local-dataset-dir dataset  # co
 
 TriAttention calibration stats need no preparation: `run-one` uses the files shipped in `triattention/calibration/` unless `--stats-path` is given.
 
+Shard output goes to `experiments/logs/...`. Each problem logs `[progress]`, a `[gen]` line every 1024 generated tokens (`runner_args.log_every_tokens`, 0 disables) and a `[done]` summary. Set `TRIATTN_FOLLOW_LOGS=1` to mirror shard logs to the console; a failing shard prints its last lines either way.
+
 ## Supported Models
 
 | Model | HuggingFace ID | Status |

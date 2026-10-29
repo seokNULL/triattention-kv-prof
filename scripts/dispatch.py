@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -24,6 +25,9 @@ MERGE_SCRIPT = REPO_ROOT / "scripts" / "merge_shards.py"
 MULTI_EVAL_SCRIPT = REPO_ROOT / "triattention" / "evaluation" / "eval_math_multi.py"
 PATH_ARG_KEYS = {"output_dir", "dataset_path", "model_path", "tokenizer_path"}
 RUNNER_EXCLUDE_KEYS = {"num_samples_by_dataset"}
+# TRIATTN_FOLLOW_LOGS=1 mirrors every shard log line to this console.
+FOLLOW_LOGS = os.environ.get("TRIATTN_FOLLOW_LOGS", "0") == "1"
+FAILURE_TAIL_LINES = 30
 
 
 @dataclass
@@ -33,6 +37,30 @@ class ActiveShard:
     process: subprocess.Popen
     log_handle: TextIO
     log_path: Path
+    tee_thread: Optional[threading.Thread] = None
+
+    def close(self) -> None:
+        if self.tee_thread is not None:
+            self.tee_thread.join()
+        self.log_handle.close()
+
+
+def _tee_output(stream: TextIO, log_handle: TextIO, shard_id: int) -> None:
+    for line in stream:
+        log_handle.write(line)
+        print(f"[shard{shard_id:02d}] {line}", end="", flush=True)
+    stream.close()
+
+
+def print_log_tail(log_path: Path, num_lines: int = FAILURE_TAIL_LINES) -> None:
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()[-num_lines:]
+    except OSError:
+        return
+    print(f"----- last {len(lines)} lines of {log_path} -----")
+    for line in lines:
+        print(line)
+    print("-----")
 
 
 def parse_args() -> argparse.Namespace:
@@ -431,17 +459,35 @@ def launch_shard(
     shard_cmd = base_cmd + ["--shard_id", str(shard_id)]
     env = base_env.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    env.setdefault("PYTHONUNBUFFERED", "1")
     log_handle = log_path.open("w", buffering=1)
     print(f"[launch] shard {shard_id} -> GPU {gpu}, log {log_path}")
+    if not FOLLOW_LOGS:
+        print(f"         follow with: tail -f {log_path}  (or set TRIATTN_FOLLOW_LOGS=1)")
     process = subprocess.Popen(
         shard_cmd,
         cwd=str(REPO_ROOT),
-        stdout=log_handle,
+        stdout=subprocess.PIPE if FOLLOW_LOGS else log_handle,
         stderr=subprocess.STDOUT,
         env=env,
         start_new_session=True,
+        text=FOLLOW_LOGS,
+        bufsize=1 if FOLLOW_LOGS else -1,
     )
-    return ActiveShard(shard_id=shard_id, gpu=gpu, process=process, log_handle=log_handle, log_path=log_path)
+    tee_thread = None
+    if FOLLOW_LOGS:
+        tee_thread = threading.Thread(
+            target=_tee_output, args=(process.stdout, log_handle, shard_id), daemon=True
+        )
+        tee_thread.start()
+    return ActiveShard(
+        shard_id=shard_id,
+        gpu=gpu,
+        process=process,
+        log_handle=log_handle,
+        log_path=log_path,
+        tee_thread=tee_thread,
+    )
 
 
 def terminate_active(active: Iterable[ActiveShard]) -> None:
@@ -456,7 +502,7 @@ def terminate_active(active: Iterable[ActiveShard]) -> None:
         except Exception:
             shard.process.kill()
         finally:
-            shard.log_handle.close()
+            shard.close()
 
 
 def run_shards(
@@ -574,8 +620,10 @@ def run_shards(
             for gpu in finished:
                 shard = active.pop(gpu)
                 return_code = shard.process.wait()
-                shard.log_handle.close()
+                shard.close()
                 if return_code != 0:
+                    if not FOLLOW_LOGS:
+                        print_log_tail(shard.log_path)
                     terminate_active(active.values())
                     raise RuntimeError(f"Shard {shard.shard_id} on GPU {gpu} exited with code {return_code}")
                 print(f"[done] shard {shard.shard_id} completed.")

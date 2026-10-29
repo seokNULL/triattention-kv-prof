@@ -14,6 +14,7 @@ from typing import Dict, List
 import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.generation.streamers import BaseStreamer
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -78,6 +79,34 @@ def str2bool(value: str | bool) -> bool:
     if value in {"false", "0", "no", "n"}:
         return False
     raise argparse.ArgumentTypeError(f"Unable to interpret boolean value '{value}'")
+
+
+class GenerationProgress(BaseStreamer):
+    """Logs the generated-token count and speed every ``every`` tokens."""
+
+    def __init__(self, every: int, label: str):
+        self.every = every
+        self.label = label
+        self.tokens = 0
+        self.started = time.perf_counter()
+        self._prompt_seen = False
+
+    def put(self, value) -> None:
+        # generate() passes the prompt ids first, then one tensor per step.
+        if not self._prompt_seen:
+            self._prompt_seen = True
+            return
+        self.tokens += 1
+        if self.tokens % self.every == 0:
+            elapsed = time.perf_counter() - self.started
+            sys.stderr.write(
+                f"[gen] {self.label} tokens={self.tokens} "
+                f"elapsed={elapsed:.0f}s tok/s={self.tokens / elapsed:.1f}\n"
+            )
+            sys.stderr.flush()
+
+    def end(self) -> None:
+        pass
 
 
 def resolve_torch_dtype(name: str):
@@ -385,6 +414,12 @@ def parse_arguments() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional cap on number of dataset examples for quick smoke tests.",
+    )
+    parser.add_argument(
+        "--log_every_tokens",
+        type=int,
+        default=1024,
+        help="Log generation progress every N generated tokens (0 disables).",
     )
     # Alignment args for fair R-KV comparison
     parser.add_argument(
@@ -701,8 +736,15 @@ def main(args: argparse.Namespace) -> None:
                     f"problem={progress}/{expected_records} sample_idx={sample_idx}\n"
                 )
                 sys.stderr.flush()
+                streamer = None
+                if args.log_every_tokens > 0:
+                    streamer = GenerationProgress(
+                        args.log_every_tokens,
+                        f"shard={args.shard_id} run={run_id} problem={progress}/{expected_records}",
+                    )
                 gen_started = time.perf_counter()
                 output = model.generate(
+                    streamer=streamer,
                     **tokenized_prompts,
                     max_length=args.max_length,
                     do_sample=True,
@@ -725,6 +767,13 @@ def main(args: argparse.Namespace) -> None:
                 decoded = tokenizer.decode(
                     output[0][prefill_length:], skip_special_tokens=True
                 )
+                sys.stderr.write(
+                    f"[done] shard={args.shard_id} run={run_id} "
+                    f"problem={progress}/{expected_records} sample_idx={sample_idx} "
+                    f"prefill={prefill_length} output_tokens={output_tokens} "
+                    f"seconds={gen_seconds:.1f} tok/s={output_tps:.1f}\n"
+                )
+                sys.stderr.flush()
 
                 record = dict(test_data[local_idx])
                 record["prompt"] = prompt
