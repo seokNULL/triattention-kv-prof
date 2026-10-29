@@ -28,3 +28,7 @@ sympy>=1.13
 latex2sympy2
 word2number
 antlr4-python3-runtime==4.7.2
+timeout-decorator
+multiprocess
+python-dateutil
+pandas
