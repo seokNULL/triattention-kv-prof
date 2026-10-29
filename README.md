@@ -128,7 +128,16 @@ python scripts/cli.py run-one \
 
 ## Datasets
 
-Benchmark datasets (AIME 2024, AIME 2025, MATH-500) are automatically downloaded from HuggingFace on first run -- no manual data preparation is needed. The evaluation scripts handle downloading, caching, and formatting transparently.
+`scripts/cli.py run-one` expects models in `experiments/models/<name>` and benchmark datasets (AIME 2024, AIME 2025, MATH-500) in `data/<name>.jsonl`. Fetch them once before running:
+
+```bash
+python scripts/prepare_assets.py                              # all models and datasets
+python scripts/prepare_assets.py --models Qwen3-8B --datasets aime24
+python scripts/prepare_assets.py --ca-bundle ~/ca-bundle.pem  # behind a TLS-intercepting proxy
+python scripts/prepare_assets.py --skip-models --local-dataset-dir dataset  # convert local copies
+```
+
+TriAttention calibration stats need no preparation: `run-one` uses the files shipped in `triattention/calibration/` unless `--stats-path` is given.
 
 ## Supported Models
 

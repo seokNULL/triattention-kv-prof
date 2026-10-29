@@ -1,5 +1,6 @@
 experiment:
-  conda_env: triattention
+  # Empty = run jobs with the current Python; set a name to use `conda run -n <name>`.
+  conda_env: ""
   runner_path: scripts/worker.py
   merged_dir_name: merged
   gpus: auto

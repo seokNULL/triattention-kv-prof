@@ -27,6 +27,12 @@ MODELS_DIR = EXP_ROOT / "models"
 LOGS_DIR = EXP_ROOT / "logs"
 OUTPUTS_DIR = EXP_ROOT / "outputs"
 STATS_DIR = EXP_ROOT / "stats"
+CALIBRATION_DIR = REPO_ROOT / "triattention" / "calibration"
+SHIPPED_STATS_STEMS = {
+    "DeepSeek-R1-Distill-Qwen-7B": "ds_qwen7b",
+    "DeepSeek-R1-Distill-Llama-8B": "ds_llama8b",
+    "Qwen3-8B": "qwen3_8b",
+}
 
 MODEL_SPECS: Dict[str, str] = {
     "DeepSeek-R1-Distill-Qwen-7B": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
@@ -128,9 +134,9 @@ def resolve_dataset_path(dataset: str) -> Path:
                     file=sys.stderr,
                 )
             return candidate
-    hint = PROJECT_ROOT / f"{dataset}.jsonl"
     raise FileNotFoundError(
-        f"Dataset file not found for {dataset}. Expected symlink at {hint}."
+        f"Dataset file not found for {dataset}: expected {REPO_ROOT / 'data' / f'{dataset}.jsonl'}. "
+        f"Run: python scripts/prepare_assets.py --skip-models --datasets {dataset}"
     )
 
 
@@ -151,7 +157,16 @@ def stats_path_for(
         sys.stderr.write(
             f"[info] triattention stats dataset: eval={dataset} stats={stats_dataset}\n"
         )
-    return STATS_DIR / stats_dataset / model_name / f"stats_budget_{budget}.pt"
+    path = STATS_DIR / stats_dataset / model_name / f"stats_budget_{budget}.pt"
+    # The repo ships one budget-independent stats file per model and dataset.
+    shipped_dir = "for_aime24_experiment" if dataset == "aime24" else "for_aime25_experiment"
+    stem = SHIPPED_STATS_STEMS.get(model_name)
+    shipped = CALIBRATION_DIR / shipped_dir / f"{stem}.pt" if stem else None
+    if not path.exists() and shipped is not None and shipped.exists():
+        if announce:
+            sys.stderr.write(f"[info] using shipped calibration stats: {shipped}\n")
+        return shipped
+    return path
 
 
 def budget_tag(mode: str, budget: int | None) -> str:
@@ -365,7 +380,8 @@ def validate_model_exists(model_name: str, dry_run: bool) -> Path:
         return model_path
     if not model_path.exists() or not any(model_path.iterdir()):
         raise FileNotFoundError(
-            f"Model not found at {model_path}. Run scripts/download_models_v2.sh first."
+            f"Model not found at {model_path}. "
+            f"Run: python scripts/prepare_assets.py --skip-datasets --models {model_name}"
         )
     return model_path
 

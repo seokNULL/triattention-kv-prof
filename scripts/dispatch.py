@@ -396,10 +396,19 @@ def format_runner_args(args_dict: Dict[str, object], total_shards: int) -> List[
     return formatted
 
 
+def python_command(conda_env: str) -> List[str]:
+    """Interpreter for child jobs: the current one unless another env is named."""
+    if (
+        conda_env
+        and conda_env != os.environ.get("CONDA_DEFAULT_ENV")
+        and shutil.which("conda")
+    ):
+        return ["conda", "run", "-n", conda_env, "python"]
+    return [sys.executable]
+
+
 def build_base_command(conda_env: str, runner_path: Path, runner_args: List[str]) -> List[str]:
-    if conda_env and shutil.which("conda"):
-        return ["conda", "run", "-n", conda_env, "python", str(runner_path)] + runner_args
-    return [sys.executable, str(runner_path)] + runner_args
+    return python_command(conda_env) + [str(runner_path)] + runner_args
 
 
 def prepare_environment(env_overrides: Dict[str, str]) -> Dict[str, str]:
@@ -646,10 +655,7 @@ def run_evaluation(base_dir: Path, dataset: str, exp_name: str, output_dir: Opti
     if not any(base_dir.glob("*.jsonl")):
         print(f"[eval] skip, no jsonl under {base_dir}")
         return
-    if conda_env and shutil.which("conda"):
-        cmd = ["conda", "run", "-n", conda_env, "python", str(MULTI_EVAL_SCRIPT)]
-    else:
-        cmd = [sys.executable, str(MULTI_EVAL_SCRIPT)]
+    cmd = python_command(conda_env) + [str(MULTI_EVAL_SCRIPT)]
     cmd += [
         "--base_dir",
         str(base_dir),
@@ -674,7 +680,7 @@ def main() -> None:
     config = load_config(args.config)
     experiment = config.get("experiment", {})
 
-    conda_env = experiment.get("conda_env", "triattention")
+    conda_env = experiment.get("conda_env", "")
     runner_path = resolve_path(experiment["runner_path"])
     total_shards = args.num_shards or experiment.get("num_shards", 1)
     gpus = determine_gpus(args, experiment)

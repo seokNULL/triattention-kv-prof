@@ -31,7 +31,9 @@ def _auto_download(data_name, save_path):
         return False
     source = HF_DATASET_SOURCES[data_name]
     print(f"Dataset '{data_name}' not found locally. Downloading from {source['hf_path']}...")
-    dataset = load_dataset(source["hf_path"], split="test")
+    # Some sources (e.g. the AIME sets) only publish a "train" split.
+    splits = load_dataset(source["hf_path"])
+    dataset = splits["test"] if "test" in splits else splits[next(iter(splits))]
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     field_map = source["field_map"]
     with open(save_path, "w") as f:
