@@ -40,7 +40,7 @@ from cli import (  # noqa: E402
     stats_path_for,
 )
 
-OUTPUT_ROOT = REPO_ROOT / "experiments" / "vllm_outputs"
+OUTPUT_ROOT = Path(__file__).resolve().parent / "outputs"
 EVAL_SCRIPT = REPO_ROOT / "triattention" / "evaluation" / "eval_math_multi.py"
 # Same per-draw seed formula as scripts/worker.py.
 RUN_SEED_STRIDE = 1_000_000

@@ -65,7 +65,7 @@ python vllm_runner/quick_test.py --model Qwen3-8B --budget 256 --pruning-mode pe
 - `compression_events`: TriAttention이 실제로 KV를 압축한 횟수. triattention인데 0이면 압축이 안 된 것입니다
   (출력이 budget + divide_length보다 짧았거나 plugin이 꺼져 있음).
 - `reclaimed_blocks`: 압축 후 반환된 KV block 수.
-- 결과: `experiments/vllm_outputs/quick/<model>/<method>/` (`results.jsonl`, `summary.json`, `triattention.log`)
+- 결과: `vllm_runner/outputs/quick/<model>/<method>/` (`results.jsonl`, `summary.json`, `triattention.log`)
 - 옵션: `--budget`, `--max-length`, `--pruning-mode`, `--divide-length`, `--window-size`,
   `--protect-prefill`/`--no-protect-prefill`, `--block-size`, `--gpu-memory-utilization`
 
@@ -78,7 +78,7 @@ fullkv에는 eviction이 없으므로 hole이 생기지 않습니다. 그래서 
 conda activate kv-prof-vllm
 python vllm_runner/kv_dump.py --model Qwen3-8B --problem 0                    # fullkv, 전체 layer
 python vllm_runner/kv_dump.py --model Qwen3-8B --problem 0 --layers 0,18,35 --snapshot-every 1024
-python vllm_runner/analyze_kv_dump.py experiments/kv_dumps/Qwen3-8B/fullkv/problem0 --plot 18:0
+python vllm_runner/analyze_kv_dump.py vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0 --plot 18:0
 ```
 
 `kv_dump.py`는 요청 1개만 생성합니다(끝난 뒤 그 block을 다른 요청이 덮어쓰지 않도록). 엔진을 같은 프로세스에서 띄우고
@@ -98,7 +98,7 @@ python vllm_runner/analyze_kv_dump.py experiments/kv_dumps/Qwen3-8B/fullkv/probl
 
 ```python
 import torch
-d = torch.load("experiments/kv_dumps/Qwen3-8B/fullkv/problem0/kv.pt")
+d = torch.load("vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0/kv.pt")
 k = d["key"][li]            # layer d["layers"][li]: [T, kv_heads, head_dim]
 block_of_token = [d["block_ids"][t // d["block_size"]] for t in range(d["kv_len"])]
 ```
@@ -106,7 +106,7 @@ block_of_token = [d["block_ids"][t // d["block_size"]] for t in range(d["kv_len"
 dump 내용을 행 단위 배열로 보기: `view_kv_dump.py`
 
 ```bash
-D=experiments/kv_dumps/Qwen3-8B/fullkv/problem0
+D=vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0
 python vllm_runner/view_kv_dump.py $D --layer 18 --head 0 --tokens 0:8          # 터미널 표 (앞 8개 dim)
 python vllm_runner/view_kv_dump.py $D --layer 0,18 --kv K --dims 0 --tokens 100:104   # 128개 dim 전부
 python vllm_runner/view_kv_dump.py $D --layer 18 --tokens all --csv kv_l18.csv  # CSV (모든 dim)
@@ -193,7 +193,7 @@ TriAttention plugin은 `triattention.*` 이름의 logger를 쓰는데, vLLM은 `
 ## 6. benchmark 결과
 
 ```
-experiments/vllm_outputs/<dataset>/<model>/sample<N>/<method>/<tag>/
+vllm_runner/outputs/<dataset>/<model>/sample<N>/<method>/<tag>/
 ├── run_config.json                 # 실제로 쓴 설정 전체
 ├── generations/generations.jsonl   # (문제, 샘플)마다 1줄: output, 토큰 수, finish_reason ...
 ├── throughput.json                 # 출력 토큰 수, 생성 시간, tok/s, 압축 횟수, 반환 block 수

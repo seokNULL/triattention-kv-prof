@@ -30,8 +30,8 @@ experiments/configs/
 experiments/models/
 experiments/stats/
 experiments/*.log
-experiments/vllm_outputs/
-experiments/kv_dumps/
+vllm_runner/outputs/
+vllm_runner/kv_dumps/
 logs/
 tmp_eval/
 

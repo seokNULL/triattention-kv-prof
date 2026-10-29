@@ -8,7 +8,7 @@ vLLM block/slot the token occupied and its decoded token piece:
        18    0     0    11    0  K <|im_start|>  0.0123  -1.2344  ...
 
 Examples:
-    D=experiments/kv_dumps/Qwen3-8B/fullkv/problem0
+    D=vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0
     python vllm_runner/view_kv_dump.py $D --layer 18 --head 0 --tokens 0:8
     python vllm_runner/view_kv_dump.py $D --layer 0,18 --kv K --dims 16
     python vllm_runner/view_kv_dump.py $D --layer 18 --csv kv_layer18.csv      # all dims

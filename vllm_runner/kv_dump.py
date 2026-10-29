@@ -19,7 +19,7 @@ compression (positions are no longer contiguous); fullkv is the baseline.
 
 Example:
     python vllm_runner/kv_dump.py --model Qwen3-8B --problem 0
-    python vllm_runner/analyze_kv_dump.py experiments/kv_dumps/Qwen3-8B/fullkv/problem0
+    python vllm_runner/analyze_kv_dump.py vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0
 """
 
 from __future__ import annotations
@@ -36,7 +36,6 @@ import torch
 from quick_test import PROBLEMS, build_settings
 from run_benchmark import (
     MODEL_SPECS,
-    REPO_ROOT,
     build_requests,
     configure_logging,
     configure_plugin_env,
@@ -45,7 +44,7 @@ from run_benchmark import (
     sampling_params,
 )
 
-DUMP_ROOT = REPO_ROOT / "experiments" / "kv_dumps"
+DUMP_ROOT = Path(__file__).resolve().parent / "kv_dumps"
 # Worker-side state lives on the model runner under this attribute.
 TRACKER_ATTR = "_kv_dump_tracker"
 
@@ -67,7 +66,7 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Also dump the cache every N KV tokens during generation (0 = final only).",
     )
-    p.add_argument("--output-dir", default=None, help="Default: experiments/kv_dumps/<model>/<method>/problem<N>")
+    p.add_argument("--output-dir", default=None, help="Default: vllm_runner/kv_dumps/<model>/<method>/problem<N>")
     # TriAttention / engine options, same meaning as in quick_test.py.
     p.add_argument("--budget", type=int, default=512)
     p.add_argument(
