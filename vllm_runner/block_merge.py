@@ -7,9 +7,11 @@ its block (--scope block) or with the kept tokens among the previous N
 positions of its block (--scope recent:N). Two tokens are compared over one
 whole slot, i.e. every kv_head x head_dim element of the layer, and an
 element counts as equal when its bf16 sign and exponent bits are equal.
-If some candidate has at least --min-match equal elements in K and in V,
-the new token is dropped (the existing token is kept as is) and its slot
-becomes a hole.
+The decision uses K only, as key-based eviction/merging methods do: if the
+candidate with the most equal K elements reaches --min-match, the new
+token is dropped (K and V; the existing token is kept as is) and its slot
+becomes a hole. The V match count with that same candidate is recorded
+for reference but does not affect the decision.
 
 Input is either a kv_dump.py result folder (reads kv.pt, all layers) or a
 CSV with K and V rows for every head and dim (view_kv_dump.py --kv KV).
@@ -42,7 +44,7 @@ def parse_args() -> argparse.Namespace:
         "--min-match",
         type=float,
         default=0.9,
-        help="Equal (sign, exponent) elements needed in both K and V: a count such as 900, "
+        help="Equal (sign, exponent) K elements needed to merge: a count such as 900, "
         "or a fraction of kv_heads x head_dim such as 0.9.",
     )
     p.add_argument("--scope", default="block", help="block, or recent:N (previous N positions in the block).")
@@ -156,11 +158,10 @@ def simulate(k_se, v_se, block, scope, min_match, protect_first):
         if len(cand) == 0:
             continue
         mk = (k_se[cand] == k_se[i]).sum(axis=1)
-        mv = (v_se[cand] == v_se[i]).sum(axis=1)
-        both = np.minimum(mk, mv)
-        j = int(both.argmax())
-        best_k[i], best_v[i] = mk[j], mv[j]
-        if i >= protect_first and both[j] >= min_match:
+        j = int(mk.argmax())
+        best_k[i] = mk[j]
+        best_v[i] = int((v_se[cand[j]] == v_se[i]).sum())  # reference only
+        if i >= protect_first and mk[j] >= min_match:
             kept[i] = False
             merged_into[i] = cand[j]
     return kept, merged_into, best_k, best_v
@@ -182,7 +183,7 @@ def main() -> None:
     out_dir = Path(args.out_dir) if args.out_dir else default_out
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"{args.csv}: {len(tokens)} tokens, {n_heads} kv_heads x {head_dim} dims "
-          f"= {n_elem} elements per slot; merge if >= {min_match} equal (sign, exponent) in K and V; "
+          f"= {n_elem} elements per slot; merge if >= {min_match} equal (sign, exponent) in K; "
           f"scope={args.scope}")
 
     rows, summary, merges = [], {}, {}
