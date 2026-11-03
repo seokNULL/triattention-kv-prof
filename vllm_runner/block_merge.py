@@ -18,7 +18,7 @@ CSV with K and V rows for every head and dim (view_kv_dump.py --kv KV).
 
 Outputs (in <folder>/opportunity/, or <csv stem>_merge/ for a CSV):
     decisions.csv  one row per (layer, token): kept, merged_into, best match counts
-    summary.json   per layer: dropped tokens, holes per block
+    summary.json   per layer: dropped tokens, blocks with at least one hole
     merges.json    per layer: each kept token with the tokens merged into it
                    (--with-values adds their K/V values)
 
@@ -201,17 +201,19 @@ def main() -> None:
                 "best_match_k": int(best_k[i]), "best_match_v": int(best_v[i]),
             })
         holes_per_block = pd.Series(~kept).groupby(block).sum()
+        blocks_with_holes = int((holes_per_block > 0).sum())
         summary[layer] = {
             "tokens": len(tokens),
             "dropped": int((~kept).sum()),
             "dropped_ratio": round(float((~kept).mean()), 4),
             "blocks": int(len(holes_per_block)),
-            "holes_per_block_mean": round(float(holes_per_block.mean()), 2),
+            "blocks_with_holes": blocks_with_holes,
+            "blocks_with_holes_ratio": round(blocks_with_holes / len(holes_per_block), 4),
             "holes_per_block_hist": {int(h): int(c) for h, c in holes_per_block.value_counts().sort_index().items()},
         }
-        print(f"layer {layer:>3}: dropped {summary[layer]['dropped']}/{len(tokens)} "
-              f"({summary[layer]['dropped_ratio']:.1%}), holes per block mean "
-              f"{summary[layer]['holes_per_block_mean']} of {int(np.bincount(block).max())}")
+        s = summary[layer]
+        print(f"layer {layer:>3}: dropped {s['dropped']}/{len(tokens)} ({s['dropped_ratio']:.1%}), "
+              f"blocks with holes {blocks_with_holes}/{s['blocks']} ({s['blocks_with_holes_ratio']:.1%})")
 
     pd.DataFrame(rows).to_csv(out_dir / "decisions.csv", index=False)
     (out_dir / "summary.json").write_text(json.dumps({

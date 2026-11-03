@@ -38,17 +38,19 @@ for summary in sorted(root.glob("*/*/problem*/opportunity/summary.json")):
         "dropped_ratio_mean": round(sum(l["dropped_ratio"] for l in layers) / len(layers), 4),
         "dropped_ratio_min": min(l["dropped_ratio"] for l in layers),
         "dropped_ratio_max": max(l["dropped_ratio"] for l in layers),
-        "holes_per_block_mean": round(sum(l["holes_per_block_mean"] for l in layers) / len(layers), 2),
+        "blocks": next(iter(layers))["blocks"],
+        "blocks_with_holes_mean": round(sum(l["blocks_with_holes"] for l in layers) / len(layers), 1),
+        "blocks_with_holes_ratio_mean": round(sum(l["blocks_with_holes_ratio"] for l in layers) / len(layers), 4),
     })
 out = root / "opportunity_summary.csv"
 with out.open("w", newline="") as f:
     writer = csv.DictWriter(f, fieldnames=list(rows[0]))
     writer.writeheader()
     writer.writerows(rows)
-print(f"\n{'model':<30} {'dataset':<8} {'problem':<9} {'tokens':>6} {'dropped(mean/min/max)':>24} {'holes/block':>11}")
+print(f"\n{'model':<30} {'dataset':<8} {'problem':<9} {'tokens':>6} {'dropped(mean/min/max)':>24} {'blocks w/ holes (mean)':>24}")
 for r in rows:
     print(f"{r['model']:<30} {r['dataset']:<8} {r['problem']:<9} {r['tokens']:>6} "
           f"{r['dropped_ratio_mean']:>8.1%} {r['dropped_ratio_min']:>6.1%} {r['dropped_ratio_max']:>6.1%} "
-          f"{r['holes_per_block_mean']:>11}")
+          f"{r['blocks_with_holes_mean']:>10}/{r['blocks']:<6} ({r['blocks_with_holes_ratio_mean']:.1%})")
 print(f"wrote {out}")
 PY
