@@ -1,33 +1,63 @@
 #!/usr/bin/env bash
-# Run the block-merge opportunity analysis on every KV dump under results/.
-# Run from vllm_runner/ after run_all.sh. Extra arguments go to block_merge.py:
-#   bash opportunity.sh                              # --min-match 0.9 --scope block
-#   bash opportunity.sh --min-match 0.8 --scope recent:4
+# Run the block-merge opportunity analysis on KV dumps under results/.
+# Run from vllm_runner/ after run_all.sh.
+#   bash opportunity.sh                                        # every dump
+#   bash opportunity.sh --model Qwen3-8B --dataset aime24 --problem 0
+#   bash opportunity.sh --model Qwen3-8B,DeepSeek-R1-Distill-Qwen-7B --problem 0,1,2
+#   bash opportunity.sh --dataset math500 --min-match 0.8 --scope recent:4
+# --model/--dataset/--problem take comma lists and default to everything found;
+# all other arguments go to block_merge.py.
 # Per dump: results/<model>/<dataset>/problem<N>/opportunity/
-# Overview: results/opportunity_summary.csv
+# Overview of the dumps analyzed in this run: results/opportunity_summary.csv
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+models="*"; datasets="*"; problems="*"
+merge_args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model)   models="$2"; shift 2 ;;
+    --dataset) datasets="$2"; shift 2 ;;
+    --problem) problems="$2"; shift 2 ;;
+    *)         merge_args+=("$1"); shift ;;
+  esac
+done
+
+# Split the comma lists without glob-expanding "*" against the current directory.
+IFS=, read -ra model_list <<< "$models"
+IFS=, read -ra dataset_list <<< "$datasets"
+IFS=, read -ra problem_list <<< "$problems"
 shopt -s nullglob
-dumps=("$HERE"/results/*/*/problem*/kv.pt)
+dumps=()
+for m in "${model_list[@]}"; do
+  for d in "${dataset_list[@]}"; do
+    for p in "${problem_list[@]}"; do
+      [[ "$p" == "*" ]] && pattern="problem*" || pattern="problem$p"
+      for kv in "$HERE"/results/$m/$d/$pattern/kv.pt; do
+        dumps+=("$(dirname "$kv")")
+      done
+    done
+  done
+done
 if [[ ${#dumps[@]} -eq 0 ]]; then
-  echo "no KV dumps under $HERE/results; run run_all.sh first" >&2
+  echo "no KV dumps match model=$models dataset=$datasets problem=$problems under $HERE/results" >&2
+  echo "available:" >&2
+  for kv in "$HERE"/results/*/*/problem*/kv.pt; do echo "  ${kv#"$HERE"/results/}" >&2; done
   exit 1
 fi
 
-for kv in "${dumps[@]}"; do
-  dir="$(dirname "$kv")"
+for dir in "${dumps[@]}"; do
   echo "===== ${dir#"$HERE"/} ====="
-  python "$HERE/block_merge.py" "$dir" "$@"
+  python "$HERE/block_merge.py" "$dir" ${merge_args[@]+"${merge_args[@]}"}
 done
 
-python - "$HERE/results" <<'PY'
+python - "$HERE/results" "${dumps[@]}" <<'PY'
 import csv, json, sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
 rows = []
-for summary in sorted(root.glob("*/*/problem*/opportunity/summary.json")):
+for summary in (Path(d) / "opportunity" / "summary.json" for d in sys.argv[2:]):
     s = json.loads(summary.read_text())
     layers = s["layers"].values()
     rel = summary.parent.parent.relative_to(root).parts

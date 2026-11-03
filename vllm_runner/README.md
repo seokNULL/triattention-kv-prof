@@ -32,7 +32,8 @@ bash opportunity.sh    # 2) 저장된 KV 전부에 block merge 분석 → result
 ```
 
 - 다른 문제: `PROBLEM=3 bash run_all.sh`, 일부만: `MODELS="Qwen3-8B" DATASETS="aime24" bash run_all.sh`
-- 분석 조건 변경: `bash opportunity.sh --min-match 0.8 --scope recent:4`
+- 분석 대상 고르기: `bash opportunity.sh --model Qwen3-8B --dataset aime24,math500 --problem 0,1` (쉼표로 여러 개, 생략하면 전부)
+- 분석 조건 변경: `bash opportunity.sh --min-match 0.8 --scope recent:4` (그 외 인자는 block_merge.py로 전달)
 - `block_merge.py` 규칙: 새 토큰을 같은 block(또는 그 안의 최근 N개)의 남은 토큰과 slot 단위(모든 kv_head × head_dim)로 비교,
   **K만 보고** bf16 부호·지수가 같은 원소가 `--min-match` 이상이면 새 토큰(K, V 함께)을 버림(hole). V 일치 수는 참고용으로만 기록
 
