@@ -93,6 +93,8 @@ def parse_args() -> argparse.Namespace:
     e.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     e.add_argument("--tensor-parallel-size", type=int, default=1)
     e.add_argument("--block-size", type=int, default=16)
+    e.add_argument("--prefix-caching", action="store_true",
+                   help="Enable vLLM prefix caching (fullkv only; off by default).")
     e.add_argument("--max-num-seqs", type=int, default=None)
     e.add_argument("--max-num-batched-tokens", type=int, default=None)
     e.add_argument(
@@ -151,6 +153,7 @@ def resolve_settings(args: argparse.Namespace) -> dict:
         "use_chat_template": bool(runner.get("use_chat_template", False)),
         "chat_system_prompt": runner.get("chat_system_prompt", ""),
         "block_size": args.block_size,
+        "prefix_caching": bool(args.prefix_caching),
     }
 
 
@@ -335,6 +338,14 @@ def make_record(req: dict, completion, seconds: float) -> dict:
     return record
 
 
+def prefix_caching(settings: dict, args: argparse.Namespace) -> bool:
+    """Prefix caching is opt-in, and incompatible with TriAttention's compressed cache."""
+    enabled = bool(getattr(args, "prefix_caching", False))
+    if enabled and settings["method"] == "triattention":
+        raise SystemExit("--prefix-caching cannot be used with --method triattention")
+    return enabled
+
+
 def engine_kwargs(settings: dict, args: argparse.Namespace) -> dict:
     kwargs = {
         "model": settings["model_path"],
@@ -346,7 +357,7 @@ def engine_kwargs(settings: dict, args: argparse.Namespace) -> dict:
         # Required by the TriAttention runtime; kept for fullkv so both
         # methods run on the same engine configuration.
         "enforce_eager": True,
-        "enable_prefix_caching": False,
+        "enable_prefix_caching": prefix_caching(settings, args),
         "trust_remote_code": True,
         "seed": settings["seed"],
         "disable_log_stats": False,

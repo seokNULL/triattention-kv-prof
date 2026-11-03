@@ -85,6 +85,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-dir", default=None,
                    help="Default: vllm_runner/results/<model>/<dataset>/problem<N>")
     p.add_argument("--skip-eval", action="store_true")
+    p.add_argument("--prefix-caching", action="store_true",
+                   help="Enable vLLM prefix caching (fullkv only). With one request per engine "
+                   "there is no earlier prefix to reuse, so outputs and KV are unchanged.")
     # TriAttention / engine options, same meaning as in quick_test.py.
     p.add_argument("--budget", type=int, default=512)
     p.add_argument(
@@ -297,6 +300,7 @@ def main() -> None:
         **cache_info,
         **dump_info,
         "layers_dumped": layers if layers is not None else "all",
+        "prefix_caching": args.prefix_caching,
         "kv_tensor": "key/value [layers, tokens, kv_heads, head_dim], logical token order, post-RoPE keys",
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
