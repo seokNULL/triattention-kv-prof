@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline block-merge simulation on a view_kv_dump.py CSV.
+"""Offline block-merge simulation on a kv_dump.py result folder or a view_kv_dump.py CSV.
 
 Tokens are appended in order into blocks of block_size slots, separately for
 every layer. When token t arrives, it is compared with the kept tokens of
@@ -11,19 +11,18 @@ If some candidate has at least --min-match equal elements in K and in V,
 the new token is dropped (the existing token is kept as is) and its slot
 becomes a hole.
 
-The CSV must contain K and V rows (view_kv_dump.py --kv KV, the default)
-with every head and dim, e.g.:
-    python vllm_runner/view_kv_dump.py $D --layer 18 --tokens all --csv kv_l18.csv
+Input is either a kv_dump.py result folder (reads kv.pt, all layers) or a
+CSV with K and V rows for every head and dim (view_kv_dump.py --kv KV).
 
-Outputs (in <csv stem>_merge/):
+Outputs (in <folder>/opportunity/, or <csv stem>_merge/ for a CSV):
     decisions.csv  one row per (layer, token): kept, merged_into, best match counts
     summary.json   per layer: dropped tokens, holes per block
     merges.json    per layer: each kept token with the tokens merged into it
                    (--with-values adds their K/V values)
 
-Example:
-    python vllm_runner/block_merge.py kv_l18.csv --min-match 0.9
-    python vllm_runner/block_merge.py kv_l18.csv --min-match 900 --scope recent:4 --with-values
+Example (from vllm_runner/):
+    python block_merge.py results/Qwen3-8B/aime24/problem0 --min-match 0.9
+    python block_merge.py kv_l18.csv --min-match 900 --scope recent:4 --with-values
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ import pandas as pd
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("csv")
+    p.add_argument("csv", help="kv_dump.py result folder, or a view_kv_dump.py CSV.")
     p.add_argument(
         "--min-match",
         type=float,
@@ -48,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--scope", default="block", help="block, or recent:N (previous N positions in the block).")
     p.add_argument("--protect-first", type=int, default=0, help="Never drop the first N tokens (e.g. the prompt).")
-    p.add_argument("--out-dir", default=None, help="Default: <csv stem>_merge/ next to the CSV.")
+    p.add_argument("--out-dir", default=None, help="Default: <folder>/opportunity/ or <csv stem>_merge/.")
     p.add_argument("--with-values", action="store_true",
                    help="Also store the K/V values [kv_head][dim] of every token in merges.json.")
     return p.parse_args()
@@ -59,6 +58,35 @@ def sign_exponent(values: np.ndarray) -> np.ndarray:
     bits = values.astype(np.float32).view(np.uint32)
     bf16 = (bits + 0x7FFF + ((bits >> 16) & 1)) >> 16
     return (bf16 >> 7).astype(np.uint16)
+
+
+def load_dump(dump_dir: Path):
+    """kv_dump.py output -> (layer iterator, token table, head count, head_dim).
+
+    Layers are converted one at a time to keep memory bounded on long dumps.
+    """
+    import torch
+
+    dump = torch.load(dump_dir / "kv.pt", map_location="cpu")
+    tokens = json.loads((dump_dir / "tokens.json").read_text())
+    _, t_len, n_heads, head_dim = dump["key"].shape
+    bs = dump["block_size"]
+    pieces = tokens.get("pieces") or []
+    table = pd.DataFrame({
+        "token": np.arange(t_len),
+        "block": [dump["block_ids"][t // bs] for t in range(t_len)],
+        "slot": np.arange(t_len) % bs,
+        "piece": [pieces[t] if t < len(pieces) else "" for t in range(t_len)],
+    })
+
+    def layers():
+        for li, layer in enumerate(dump["layers"]):
+            yield int(layer), {
+                kind: dump[name][li].float().reshape(t_len, n_heads * head_dim).numpy()
+                for kind, name in (("K", "key"), ("V", "value"))
+            }
+
+    return layers(), table, n_heads, head_dim
 
 
 def load(csv_path: str):
@@ -140,19 +168,25 @@ def simulate(k_se, v_se, block, scope, min_match, protect_first):
 
 def main() -> None:
     args = parse_args()
-    data, table, n_heads, head_dim = load(args.csv)
+    src = Path(args.csv)
+    if src.is_dir():
+        layer_iter, table, n_heads, head_dim = load_dump(src)
+        default_out = src / "opportunity"
+    else:
+        data, table, n_heads, head_dim = load(args.csv)
+        layer_iter = iter(sorted(data.items()))
+        default_out = src.parent / f"{src.stem}_merge"
     tokens, block, slot = table.token.to_numpy(), table.block.to_numpy(), table.slot.to_numpy()
     n_elem = n_heads * head_dim
     min_match = int(round(args.min_match * n_elem)) if args.min_match <= 1 else int(args.min_match)
-    csv_path = Path(args.csv)
-    out_dir = Path(args.out_dir) if args.out_dir else csv_path.parent / f"{csv_path.stem}_merge"
+    out_dir = Path(args.out_dir) if args.out_dir else default_out
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"{args.csv}: layers {sorted(data)}, {len(tokens)} tokens, {n_heads} kv_heads x {head_dim} dims "
+    print(f"{args.csv}: {len(tokens)} tokens, {n_heads} kv_heads x {head_dim} dims "
           f"= {n_elem} elements per slot; merge if >= {min_match} equal (sign, exponent) in K and V; "
           f"scope={args.scope}")
 
     rows, summary, merges = [], {}, {}
-    for layer, vals in sorted(data.items()):
+    for layer, vals in layer_iter:
         kept, merged_into, best_k, best_v = simulate(
             sign_exponent(vals["K"]), sign_exponent(vals["V"]), block, args.scope, min_match,
             args.protect_first)

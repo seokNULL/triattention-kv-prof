@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Dump the paged KV cache of one quick-test problem generated with vLLM.
+"""Generate one benchmark problem with vLLM, grade it, and dump its paged KV cache.
 
-Runs a single request (one problem from data/quick.jsonl) so its blocks are
-not reused by other requests, records the request's block table after every
-engine step, and after generation copies its K/V out of vLLM's paged cache:
+Runs a single request (one problem of aime24/aime25/math500, or of the
+bundled quick set) so its blocks are not reused by other requests, records
+the request's block table after every engine step, and after generation
+copies its K/V out of vLLM's paged cache into
+results/<model>/<dataset>/problem<N>/ (problem<N>_<method> for non-fullkv):
 
     <out>/kv.pt        key/value [layers, tokens, kv_heads, head_dim] (bf16),
                        in logical token order, plus block_ids/block_size so
@@ -13,13 +15,14 @@ engine step, and after generation copies its K/V out of vLLM's paged cache:
     <out>/tokens.json  token ids and decoded pieces for every KV position
     <out>/trace.jsonl  per step: KV length and block table
     <out>/snapshots/   optional mid-generation dumps (--snapshot-every)
+    <out>/generations/ the generated answer; <out>/eval/ its grading
 
 With --method triattention the dump is the compacted cache after the last
 compression (positions are no longer contiguous); fullkv is the baseline.
 
-Example:
-    python vllm_runner/kv_dump.py --model Qwen3-8B --problem 0
-    python vllm_runner/analyze_kv_dump.py vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0
+Example (from vllm_runner/):
+    python kv_dump.py --model Qwen3-8B --dataset aime24 --problem 0
+    python kv_dump.py --model Qwen3-8B --dataset quick
 """
 
 from __future__ import annotations
@@ -33,18 +36,29 @@ from pathlib import Path
 import cloudpickle
 import torch
 
-from quick_test import PROBLEMS, build_settings
+from quick_test import build_settings
 from run_benchmark import (
+    DATASETS,
     MODEL_SPECS,
+    OUTPUT_ROOT,
     build_requests,
     configure_logging,
     configure_plugin_env,
+    dataset_max_length,
     engine_kwargs,
+    evaluate,
     load_problems,
+    load_runner_defaults,
+    make_record,
+    resolve_dataset_path,
     sampling_params,
+    stats_path_for,
 )
 
-DUMP_ROOT = Path(__file__).resolve().parent / "kv_dumps"
+QUICK = "quick"
+# The quick set has integer answers, graded with the aime24 rules.
+QUICK_EVAL_DATASET = "aime24"
+QUICK_MAX_LENGTH = 4096
 # Worker-side state lives on the model runner under this attribute.
 TRACKER_ATTR = "_kv_dump_tracker"
 
@@ -53,8 +67,10 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--model", required=True, choices=list(MODEL_SPECS))
     p.add_argument("--method", default="fullkv", choices=["fullkv", "triattention"])
-    p.add_argument("--problem", type=int, default=0, help="Row of data/quick.jsonl.")
-    p.add_argument("--max-length", type=int, default=4096, help="Prompt + generation tokens.")
+    p.add_argument("--dataset", default=QUICK, choices=DATASETS + [QUICK])
+    p.add_argument("--problem", type=int, default=0, help="Problem index (row) in the dataset.")
+    p.add_argument("--max-length", type=int, default=None,
+                   help="Prompt + generation tokens (default: aime 32768, math500 8192, quick 4096).")
     p.add_argument(
         "--layers",
         default="all",
@@ -66,7 +82,9 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Also dump the cache every N KV tokens during generation (0 = final only).",
     )
-    p.add_argument("--output-dir", default=None, help="Default: vllm_runner/kv_dumps/<model>/<method>/problem<N>")
+    p.add_argument("--output-dir", default=None,
+                   help="Default: vllm_runner/results/<model>/<dataset>/problem<N>")
+    p.add_argument("--skip-eval", action="store_true")
     # TriAttention / engine options, same meaning as in quick_test.py.
     p.add_argument("--budget", type=int, default=512)
     p.add_argument(
@@ -205,10 +223,20 @@ def _dump_final(worker_wrapper, out_dir):
 
 def main() -> None:
     args = parse_args()
+    quick = args.dataset == QUICK
+    eval_dataset = QUICK_EVAL_DATASET if quick else args.dataset
+    if args.max_length is None:
+        args.max_length = QUICK_MAX_LENGTH if quick else dataset_max_length(
+            args.dataset, load_runner_defaults())
     settings = build_settings(args)
-    settings["dataset"] = "quick"
+    settings["dataset"] = args.dataset
+    if not quick:
+        settings["dataset_path"] = str(resolve_dataset_path(args.dataset))
+    if args.method == "triattention":
+        settings["stats_path"] = str(stats_path_for(eval_dataset, args.model, args.budget, announce=False))
+    name = f"problem{args.problem}" + ("" if args.method == "fullkv" else f"_{args.method}")
     out_dir = Path(args.output_dir) if args.output_dir else (
-        DUMP_ROOT / args.model / args.method / f"problem{args.problem}"
+        OUTPUT_ROOT / args.model / args.dataset / name
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     layers = None if args.layers == "all" else [int(x) for x in args.layers.split(",")]
@@ -226,7 +254,7 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(settings["model_path"], use_fast=True)
     rows = load_problems(settings)
     if not 0 <= args.problem < len(rows):
-        raise SystemExit(f"--problem must be in [0, {len(rows) - 1}] ({PROBLEMS})")
+        raise SystemExit(f"--problem must be in [0, {len(rows) - 1}] ({settings['dataset_path']})")
     (request,) = build_requests([rows[args.problem]], tokenizer, settings)
 
     llm = LLM(**engine_kwargs(settings, args))
@@ -273,6 +301,13 @@ def main() -> None:
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
     print(f"[kv-dump] {json.dumps(dump_info)}")
+
+    gen_dir = out_dir / "generations"
+    gen_dir.mkdir(exist_ok=True)
+    (gen_dir / "generations.jsonl").write_text(
+        json.dumps(make_record(request, completion, 0.0), ensure_ascii=False) + "\n")
+    if not args.skip_eval:
+        evaluate({**settings, "dataset": eval_dataset, "num_samples": 1}, out_dir, gen_dir)
     print(f"[kv-dump] wrote {out_dir}")
 
 

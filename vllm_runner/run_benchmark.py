@@ -8,7 +8,7 @@ plugin in ``triattention/vllm`` (installed as a ``vllm.general_plugins`` entry
 point); ``--method fullkv`` disables it.
 
 Example:
-    python vllm_runner/run_benchmark.py --model Qwen3-8B --dataset aime24 \\
+    python run_benchmark.py --model Qwen3-8B --dataset aime24 \\
         --method triattention --budget 2048 --num-samples 1 --max-examples 3
 """
 
@@ -40,7 +40,8 @@ from cli import (  # noqa: E402
     stats_path_for,
 )
 
-OUTPUT_ROOT = Path(__file__).resolve().parent / "outputs"
+# Everything the vllm_runner tools generate: results/<model>/<dataset>/...
+OUTPUT_ROOT = Path(__file__).resolve().parent / "results"
 EVAL_SCRIPT = REPO_ROOT / "triattention" / "evaluation" / "eval_math_multi.py"
 # Same per-draw seed formula as scripts/worker.py.
 RUN_SEED_STRIDE = 1_000_000
@@ -161,8 +162,9 @@ def run_dir_for(settings: dict, args: argparse.Namespace) -> Path:
         tag += f"_{args.run_tag}"
     return (
         Path(args.output_root)
-        / settings["dataset"]
         / settings["model"]
+        / settings["dataset"]
+        / "benchmark"
         / f"sample{settings['num_samples']}"
         / settings["method"]
         / tag

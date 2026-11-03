@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# Run fullkv and triattention for every model x dataset with vLLM.
-# Extra arguments are forwarded to run_benchmark.py, e.g.:
-#   bash vllm_runner/run_all.sh --num-samples 1 --max-examples 3
-#   MODELS="Qwen3-8B" DATASETS="aime24 math500" METHODS=triattention bash vllm_runner/run_all.sh
+# Generate one problem per benchmark with fullkv for every model and dump its KV cache.
+# Run from vllm_runner/:
+#   bash run_all.sh                       # problem 0 of aime24, aime25, math500 x 3 models
+#   PROBLEM=3 bash run_all.sh             # another problem index
+#   MODELS="Qwen3-8B" DATASETS="aime24" bash run_all.sh
+# Results: results/<model>/<dataset>/problem<N>/ (kv.pt, tokens.json, meta.json, eval/ ...)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODELS="${MODELS:-Qwen3-8B DeepSeek-R1-Distill-Llama-8B DeepSeek-R1-Distill-Qwen-7B}"
 DATASETS="${DATASETS:-aime24 aime25 math500}"
-METHODS="${METHODS:-fullkv triattention}"
+PROBLEM="${PROBLEM:-0}"
 
 for model in $MODELS; do
   for dataset in $DATASETS; do
-    for method in $METHODS; do
-      echo "===== $model / $dataset / $method ====="
-      python "$HERE/run_benchmark.py" --model "$model" --dataset "$dataset" --method "$method" "$@"
-    done
+    echo "===== $model / $dataset / problem $PROBLEM (fullkv) ====="
+    python "$HERE/kv_dump.py" --model "$model" --dataset "$dataset" --problem "$PROBLEM" \
+      --method fullkv "$@"
   done
 done

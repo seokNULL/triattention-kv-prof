@@ -27,9 +27,9 @@ reports, per tau, holes at each granularity of the vLLM layout
 Outputs go to <dump>/holes/: report.json and PNG figures.
 
 Example:
-    D=vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0
-    python vllm_runner/hole_analysis.py $D
-    python vllm_runner/hole_analysis.py $D --taus 0.8,0.9,0.95 --scope block --plot-tau 0.9
+    D=results/Qwen3-8B/aime24/problem0
+    python hole_analysis.py $D
+    python hole_analysis.py $D --taus 0.8,0.9,0.95 --scope block --plot-tau 0.9
 """
 
 from __future__ import annotations

@@ -7,8 +7,8 @@ each answer and the compression events the plugin logged. Prompt, sampling,
 seeds and engine settings are the ones ``run_benchmark.py`` uses.
 
 Example:
-    python vllm_runner/quick_test.py --model Qwen3-8B --method triattention
-    python vllm_runner/quick_test.py --model Qwen3-8B --method fullkv
+    python quick_test.py --model Qwen3-8B --method triattention
+    python quick_test.py --model Qwen3-8B --method fullkv
 """
 
 from __future__ import annotations
@@ -130,7 +130,7 @@ def is_correct(pred: str | None, gold: str) -> bool:
 def main() -> None:
     args = parse_args()
     settings = build_settings(args)
-    run_dir = OUTPUT_ROOT / "quick" / args.model / args.method
+    run_dir = OUTPUT_ROOT / args.model / "quick_test" / args.method
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "run_config.json").write_text(json.dumps(settings, indent=2))
 

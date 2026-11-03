@@ -21,8 +21,8 @@ token with all earlier tokens, not only with tokens kept by a policy, so it
 is an upper bound on what a sequential policy would merge.
 
 Example:
-    python vllm_runner/analyze_kv_dump.py vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0
-    python vllm_runner/analyze_kv_dump.py <dump> --taus 0.9,0.95 --plot 18:0
+    python analyze_kv_dump.py results/Qwen3-8B/aime24/problem0
+    python analyze_kv_dump.py <dump> --taus 0.9,0.95 --plot 18:0
 """
 
 from __future__ import annotations

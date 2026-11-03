@@ -8,7 +8,10 @@
 |---|---|
 | `quick_test.py` | 짧은 문제 8개로 1~2분 안에 끝나는 동작 확인 (압축 발생 횟수 출력) |
 | `run_benchmark.py` | benchmark: 모델 1개 × 데이터셋 1개 × 방법 1개 실행 + 채점 |
-| `run_all.sh` | 3개 모델 × 3개 데이터셋 × (fullkv, triattention) 일괄 실행 |
+| `run_all.sh` | **3개 모델 × 3개 benchmark, 문제 1개씩 fullkv 실행 + KV dump** |
+| `opportunity.sh` | **`results/` 아래 모든 KV dump에 block merge 분석 + 전체 요약** |
+| `block_merge.py` | block 안에서 부호·지수 비교로 토큰을 합치는 시뮬레이션 (dump 폴더 또는 CSV 입력) |
+| `run_benchmark_all.sh` | benchmark 전체(모든 문제) × (fullkv, triattention) 일괄 실행 |
 | `env_check.py` | 버전, plugin 등록, 모델/데이터/통계 파일 존재 여부 확인 |
 | `kv_dump.py` | quick 문제 1개를 생성하면서 paged KV cache와 block table을 파일로 dump |
 | `view_kv_dump.py` | dump를 `layer head token block slot K/V 값...` 행 형태로 출력하거나 CSV/numpy로 저장 |
@@ -17,6 +20,35 @@
 | `data/quick.jsonl` | `quick_test.py`, `kv_dump.py`용 문제 8개 (정답은 정수) |
 
 모델·데이터셋 목록, 기본 budget, 통계 파일 선택, 데이터 경로는 `scripts/cli.py`의 것을 그대로 가져다 씁니다.
+
+## 0. 가장 간단한 사용법 (모든 명령은 `vllm_runner/` 안에서)
+
+```bash
+conda activate kv-prof-vllm
+cd ~/work/triattention-kv-prof/vllm_runner
+
+bash run_all.sh        # 1) 3 모델 × (aime24, aime25, math500) 문제 1개씩 fullkv 실행, 채점, KV 저장
+bash opportunity.sh    # 2) 저장된 KV 전부에 block merge 분석 → results/opportunity_summary.csv
+```
+
+- 다른 문제: `PROBLEM=3 bash run_all.sh`, 일부만: `MODELS="Qwen3-8B" DATASETS="aime24" bash run_all.sh`
+- 분석 조건 변경: `bash opportunity.sh --min-match 0.8 --scope recent:4`
+- `block_merge.py` 규칙: 새 토큰을 같은 block(또는 그 안의 최근 N개)의 남은 토큰과 slot 단위(모든 kv_head × head_dim)로 비교,
+  bf16 부호·지수가 같은 원소가 K와 V 모두 `--min-match` 이상이면 새 토큰을 버림(hole)
+
+결과는 전부 `results/` 아래에 생깁니다.
+
+```
+results/
+├── opportunity_summary.csv                     # 모델 × benchmark 요약
+└── <model>/<dataset>/problem<N>/
+    ├── kv.pt, tokens.json, meta.json, trace.jsonl   # KV dump
+    ├── generations/, eval/                          # 생성 답과 채점
+    └── opportunity/                                 # decisions.csv, merges.json, summary.json
+```
+
+KV 크기는 토큰당 Qwen3-8B 144KB, DS-Llama-8B 128KB, DS-Qwen-7B 56KB입니다.
+AIME 문제는 생성이 수만 토큰이라 dump 하나가 수 GB가 될 수 있습니다.
 
 ## 1. 환경: `kv-prof`를 복제해서 vLLM 설치
 
@@ -36,7 +68,7 @@ pip install "vllm==0.18.1"
 cd ~/work/triattention-kv-prof
 pip install -e . --no-deps          # 이 환경에 TriAttention plugin entry point 등록
 pip install -r requirements.txt     # 채점기 의존성 (timeout-decorator, multiprocess 등)
-python vllm_runner/env_check.py     # 마지막 줄이 "== result: OK" 이면 준비 완료
+python env_check.py     # 마지막 줄이 "== result: OK" 이면 준비 완료
 ```
 
 모델(`experiments/models/`)과 데이터(`data/`)는 저장소 안의 파일이라 두 환경이 같이 씁니다.
@@ -49,9 +81,9 @@ python vllm_runner/env_check.py     # 마지막 줄이 "== result: OK" 이면 �
 
 ```bash
 conda activate kv-prof-vllm
-python vllm_runner/quick_test.py --model Qwen3-8B --method triattention
-python vllm_runner/quick_test.py --model Qwen3-8B --method fullkv          # 비교용
-python vllm_runner/quick_test.py --model Qwen3-8B --budget 256 --pruning-mode per_layer_per_head
+python quick_test.py --model Qwen3-8B --method triattention
+python quick_test.py --model Qwen3-8B --method fullkv          # 비교용
+python quick_test.py --model Qwen3-8B --budget 256 --pruning-mode per_layer_per_head
 ```
 
 마지막에 문제별 정답/예측/토큰 수 표와 요약이 출력됩니다.
@@ -66,7 +98,7 @@ python vllm_runner/quick_test.py --model Qwen3-8B --budget 256 --pruning-mode pe
 - `compression_events`: TriAttention이 실제로 KV를 압축한 횟수. triattention인데 0이면 압축이 안 된 것입니다
   (출력이 budget + divide_length보다 짧았거나 plugin이 꺼져 있음).
 - `reclaimed_blocks`: 압축 후 반환된 KV block 수.
-- 결과: `vllm_runner/outputs/quick/<model>/<method>/` (`results.jsonl`, `summary.json`, `triattention.log`)
+- 결과: `results/<model>/quick_test/<method>/` (`results.jsonl`, `summary.json`, `triattention.log`)
 - 옵션: `--budget`, `--max-length`, `--pruning-mode`, `--divide-length`, `--window-size`,
   `--protect-prefill`/`--no-protect-prefill`, `--block-size`, `--gpu-memory-utilization`
 
@@ -77,9 +109,9 @@ fullkv에는 eviction이 없으므로 hole이 생기지 않습니다. 그래서 
 
 ```bash
 conda activate kv-prof-vllm
-python vllm_runner/kv_dump.py --model Qwen3-8B --problem 0                    # fullkv, 전체 layer
-python vllm_runner/kv_dump.py --model Qwen3-8B --problem 0 --layers 0,18,35 --snapshot-every 1024
-python vllm_runner/analyze_kv_dump.py vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0 --plot 18:0
+python kv_dump.py --model Qwen3-8B --dataset quick --problem 0     # fullkv, 전체 layer
+python kv_dump.py --model Qwen3-8B --dataset quick --layers 0,18,35 --snapshot-every 1024
+python analyze_kv_dump.py results/Qwen3-8B/quick/problem0 --plot 18:0
 ```
 
 `kv_dump.py`는 요청 1개만 생성합니다(끝난 뒤 그 block을 다른 요청이 덮어쓰지 않도록). 엔진을 같은 프로세스에서 띄우고
@@ -99,7 +131,7 @@ python vllm_runner/analyze_kv_dump.py vllm_runner/kv_dumps/Qwen3-8B/fullkv/probl
 
 ```python
 import torch
-d = torch.load("vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0/kv.pt")
+d = torch.load("results/Qwen3-8B/quick/problem0/kv.pt")
 k = d["key"][li]            # layer d["layers"][li]: [T, kv_heads, head_dim]
 block_of_token = [d["block_ids"][t // d["block_size"]] for t in range(d["kv_len"])]
 ```
@@ -107,11 +139,11 @@ block_of_token = [d["block_ids"][t // d["block_size"]] for t in range(d["kv_len"
 dump 내용을 행 단위 배열로 보기: `view_kv_dump.py`
 
 ```bash
-D=vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0
-python vllm_runner/view_kv_dump.py $D --layer 18 --head 0 --tokens 0:8          # 터미널 표 (앞 8개 dim)
-python vllm_runner/view_kv_dump.py $D --layer 0,18 --kv K --dims 0 --tokens 100:104   # 128개 dim 전부
-python vllm_runner/view_kv_dump.py $D --layer 18 --tokens all --csv kv_l18.csv  # CSV (모든 dim)
-python vllm_runner/view_kv_dump.py $D --layer 18 --npz kv_l18.npz               # numpy float32 배열
+D=results/Qwen3-8B/quick/problem0
+python view_kv_dump.py $D --layer 18 --head 0 --tokens 0:8          # 터미널 표 (앞 8개 dim)
+python view_kv_dump.py $D --layer 0,18 --kv K --dims 0 --tokens 100:104   # 128개 dim 전부
+python view_kv_dump.py $D --layer 18 --tokens all --csv kv_l18.csv  # CSV (모든 dim)
+python view_kv_dump.py $D --layer 18 --npz kv_l18.npz               # numpy float32 배열
 ```
 
 ```
@@ -146,10 +178,10 @@ dump를 토큰 순서대로 다시 넣으면서 append 시점 정책을 적용�
 `--accumulate mean`이면 s의 K/V를 합쳐진 토큰들의 평균으로 갱신합니다. prompt 토큰은 항상 남깁니다.
 
 ```bash
-D=vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0
-python vllm_runner/hole_analysis.py $D                                   # τ = 0.7~0.99 sweep, scope=all
-python vllm_runner/hole_analysis.py $D --scope block --plot-tau 0.9      # 같은 block 안에서만 합치기
-python vllm_runner/hole_analysis.py $D --scope window:64 --layers 0,18,35 --accumulate none
+D=results/Qwen3-8B/quick/problem0
+python hole_analysis.py $D                                   # τ = 0.7~0.99 sweep, scope=all
+python hole_analysis.py $D --scope block --plot-tau 0.9      # 같은 block 안에서만 합치기
+python hole_analysis.py $D --scope window:64 --layers 0,18,35 --accumulate none
 ```
 
 | 옵션 | 기본값 | 설명 |
@@ -189,16 +221,16 @@ python vllm_runner/hole_analysis.py $D --scope window:64 --layers 0,18,35 --accu
 conda activate kv-prof-vllm
 
 # 짧게 확인 (3문제, 샘플 1개)
-python vllm_runner/run_benchmark.py --model Qwen3-8B --dataset aime24 --method fullkv \
+python run_benchmark.py --model Qwen3-8B --dataset aime24 --method fullkv \
     --num-samples 1 --max-examples 3
-python vllm_runner/run_benchmark.py --model Qwen3-8B --dataset aime24 --method triattention \
+python run_benchmark.py --model Qwen3-8B --dataset aime24 --method triattention \
     --budget 2048 --num-samples 1 --max-examples 3
 
 # 전체: 3 모델 × 3 데이터셋 × 2 방법 (추가 인자는 모두 run_benchmark.py로 전달)
-bash vllm_runner/run_all.sh
-bash vllm_runner/run_all.sh --num-samples 1 --max-examples 3
+bash run_benchmark_all.sh
+bash run_benchmark_all.sh --num-samples 1 --max-examples 3
 MODELS="Qwen3-8B" DATASETS="aime24 math500" METHODS=triattention \
-    bash vllm_runner/run_all.sh --budget 1024
+    bash run_benchmark_all.sh --budget 1024
 ```
 
 실행 중에는 vLLM 진행 막대, 주기적인 KV cache 사용률 로그, TriAttention 압축 로그
@@ -238,7 +270,7 @@ TriAttention plugin은 `triattention.*` 이름의 logger를 쓰는데, vLLM은 `
 ## 6. benchmark 결과
 
 ```
-vllm_runner/outputs/<dataset>/<model>/sample<N>/<method>/<tag>/
+results/<model>/<dataset>/benchmark/sample<N>/<method>/<tag>/
 ├── run_config.json                 # 실제로 쓴 설정 전체
 ├── generations/generations.jsonl   # (문제, 샘플)마다 1줄: output, 토큰 수, finish_reason ...
 ├── throughput.json                 # 출력 토큰 수, 생성 시간, tok/s, 압축 횟수, 반환 block 수
