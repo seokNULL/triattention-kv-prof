@@ -12,6 +12,7 @@
 | `env_check.py` | 버전, plugin 등록, 모델/데이터/통계 파일 존재 여부 확인 |
 | `kv_dump.py` | quick 문제 1개를 생성하면서 paged KV cache와 block table을 파일로 dump |
 | `view_kv_dump.py` | dump를 `layer head token block slot K/V 값...` 행 형태로 출력하거나 CSV/numpy로 저장 |
+| `hole_analysis.py` | 유사한 토큰을 합쳤을 때 생기는 hole을 vLLM layout 단위로 수치화하고 그래프 5개로 저장 |
 | `analyze_kv_dump.py` | dump에서 KV 유사도와 (가상의) hole 비율을 계산하는 예시 분석 |
 | `data/quick.jsonl` | `quick_test.py`, `kv_dump.py`용 문제 8개 (정답은 정수) |
 
@@ -137,6 +138,50 @@ layer head token block slot kv piece                d0        d1  ...
 
 비교 대상을 "앞선 모든 토큰"으로 잡아서, 실제 순차 정책이 없앨 수 있는 양의 상한입니다.
 `--method triattention`으로 dump하면 마지막 압축 이후의 압축된 cache가 저장됩니다(위치가 연속이 아님).
+
+### hole 수치화와 그래프: `hole_analysis.py`
+
+dump를 토큰 순서대로 다시 넣으면서 append 시점 정책을 적용합니다. 토큰 t가 들어올 때, 같은 (layer, kv_head)에서
+**아직 남아 있는** 앞선 토큰 s 중 `cos(K_t, K_s) ≥ τ` 이고 `cos(V_t, V_s) ≥ τ`인 것이 있으면 t를 s에 합치고(t의 칸은 hole),
+`--accumulate mean`이면 s의 K/V를 합쳐진 토큰들의 평균으로 갱신합니다. prompt 토큰은 항상 남깁니다.
+
+```bash
+D=vllm_runner/kv_dumps/Qwen3-8B/fullkv/problem0
+python vllm_runner/hole_analysis.py $D                                   # τ = 0.7~0.99 sweep, scope=all
+python vllm_runner/hole_analysis.py $D --scope block --plot-tau 0.9      # 같은 block 안에서만 합치기
+python vllm_runner/hole_analysis.py $D --scope window:64 --layers 0,18,35 --accumulate none
+```
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `--taus` | `0.7,0.8,0.9,0.95,0.99` | sweep할 K 임계값 |
+| `--tau-v` | τ와 같음 | V 임계값 |
+| `--scope` | `all` | 합칠 수 있는 대상: `all`(앞선 전체), `block`(같은 vLLM block), `window:N`(직전 N 토큰) |
+| `--accumulate` | `mean` | `mean`: 합쳐진 대상 벡터를 평균으로 갱신, `none`: 그대로 |
+| `--row-bytes` | 1024 | DRAM row 크기 (row 분석용) |
+| `--layers` | 전체 | 분석할 layer (CPU에서는 줄이는 것을 권장) |
+| `--plot-tau`, `--plot-layer`, `--plot-tokens` | 가운데 τ, 가운데 layer, 512 | 3·4·5번 그래프 대상 |
+
+τ마다 출력되는 지표 (`holes/report.json`에도 저장):
+
+| 지표 | 의미 |
+|---|---|
+| `head-slot` | 없어진 (토큰, kv_head) 칸 비율 — head별 eviction이 만드는 hole |
+| `tok-slot` | 한 layer에서 모든 kv_head가 없어진 slot 비율 — vLLM slot 단위 hole |
+| `free L-blk` | 모든 칸이 빈 (layer, block) 비율 |
+| `free blk id` | 모든 layer에서 빈 block 번호 수 — compaction 없이 vLLM이 바로 반환할 수 있는 양 |
+| `compacted` | (layer, head)마다 남은 토큰을 앞으로 모으면 필요한 block 수 (TriAttention식 per-head compaction) |
+| `NHD/HND empty, partial` | `--row-bytes` 크기 DRAM row 중 전부 hole인 row(그대로 회수 가능) / 일부만 hole인 row(row보다 작은 이동 필요) 비율. (layer, K/V, block) 조각이 연속 row에 놓인다고 가정, NHD(slot→head)와 HND(head→slot) 비교 |
+
+`<dump>/holes/` 그래프:
+
+1. `1_similarity_hist.png`: 생성 토큰의 가장 비슷한 앞선 토큰과의 K cosine, 그 토큰과의 V cosine 분포
+2. `2_tau_sweep.png`: τ에 따른 각 단위의 hole 비율과 DRAM row 상태 (NHD vs HND)
+3. `3_block_occupancy.png`: (layer, block)별로 남은 칸 비율 heatmap
+4. `4_layer_token_head_map.png`: 한 layer의 토큰 × head 지도 (흰색 = 남음, 검정 = hole, 빨간선 = block 경계)
+5. `5_block_fill_hist.png`: (layer, block)별 남은 비율 분포 (조각화 정도)
+
+계산은 GPU가 있으면 GPU에서 합니다. 36 layer × 4096 토큰 dump는 CPU에서 오래 걸리니 `--layers`로 줄이세요.
 
 ## 4. benchmark 실행: `run_benchmark.py`
 
