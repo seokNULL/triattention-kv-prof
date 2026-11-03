@@ -31,7 +31,8 @@ bash run_all.sh        # 1) 3 모델 × (aime24, aime25, math500) 문제 1개씩
 bash opportunity.sh    # 2) 저장된 KV 전부에 block merge 분석 → results/opportunity_summary.csv
 ```
 
-- 다른 문제: `PROBLEM=3 bash run_all.sh`, 일부만: `MODELS="Qwen3-8B" DATASETS="aime24" bash run_all.sh`
+- 문제 고르기: `PROBLEM=3`, 범위 `PROBLEM=0-4`, 목록 `PROBLEM=0,3,7-9`, 전부 `PROBLEM=all` (benchmark별 문제 수 자동: aime 30, math500 500)
+- 일부만: `MODELS="Qwen3-8B" DATASETS="aime24" bash run_all.sh`, 이미 dump한 문제 건너뛰기: `SKIP_EXISTING=1`
 - prefix caching 켜기: `PREFIX_CACHING=1 bash run_all.sh` (기본 꺼짐, fullkv 전용, `meta.json`에 기록). 문제마다 요청 하나로 엔진을 새로 띄우므로 재사용할 prefix가 없어 결과는 보통 같습니다
 - 분석 대상 고르기: `bash opportunity.sh --model Qwen3-8B --dataset aime24,math500 --problem 0,1` (쉼표로 여러 개, 생략하면 전부)
 - 분석 조건 변경: `bash opportunity.sh --min-match 0.8 --scope recent:4` (그 외 인자는 block_merge.py로 전달)
