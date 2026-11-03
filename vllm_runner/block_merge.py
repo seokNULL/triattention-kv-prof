@@ -55,6 +55,13 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+BF16_BYTES = 2
+
+
+def mib(n_bytes: int) -> str:
+    return f"{n_bytes / 2**20:.2f} MiB"
+
+
 def sign_exponent(values: np.ndarray) -> np.ndarray:
     """bf16 sign and exponent bits (9 bits) of float values, round-to-nearest-even."""
     bits = values.astype(np.float32).view(np.uint32)
@@ -201,6 +208,7 @@ def main() -> None:
                 "best_match_k": int(best_k[i]), "best_match_v": int(best_v[i]),
             })
         holes_per_block = pd.Series(~kept).groupby(block).sum()
+        slots_per_block = pd.Series(np.ones(len(kept), dtype=int)).groupby(block).sum()
         blocks_with_holes = int((holes_per_block > 0).sum())
         summary[layer] = {
             "tokens": len(tokens),
@@ -209,16 +217,45 @@ def main() -> None:
             "blocks": int(len(holes_per_block)),
             "blocks_with_holes": blocks_with_holes,
             "blocks_with_holes_ratio": round(blocks_with_holes / len(holes_per_block), 4),
+            "empty_blocks": int((holes_per_block == slots_per_block).sum()),
             "holes_per_block_hist": {int(h): int(c) for h, c in holes_per_block.value_counts().sort_index().items()},
         }
         s = summary[layer]
         print(f"layer {layer:>3}: dropped {s['dropped']}/{len(tokens)} ({s['dropped_ratio']:.1%}), "
               f"blocks with holes {blocks_with_holes}/{s['blocks']} ({s['blocks_with_holes_ratio']:.1%})")
 
+    # Each dropped (layer, token) leaves one hole: one K and one V slot of
+    # kv_heads x head_dim bf16 values in that layer.
+    slot_bytes = 2 * n_elem * BF16_BYTES
+    layer_list = list(summary.values())
+    total_slots = sum(s["tokens"] for s in layer_list)
+    holes = sum(s["dropped"] for s in layer_list)
+    empty_blocks = sum(s["empty_blocks"] for s in layer_list)
+    block_size = int(np.bincount(block).max())
+    total = {
+        "layers": len(layer_list),
+        "slots": total_slots,
+        "dropped": holes,
+        "holes": holes,
+        "dropped_ratio": round(holes / total_slots, 4),
+        "blocks": sum(s["blocks"] for s in layer_list),
+        "blocks_with_holes": sum(s["blocks_with_holes"] for s in layer_list),
+        "kv_bytes_per_slot": slot_bytes,
+        "total_kv_bytes": total_slots * slot_bytes,
+        "hole_bytes": holes * slot_bytes,
+        "empty_blocks": empty_blocks,
+        "free_bytes_without_migration": empty_blocks * block_size * slot_bytes,
+    }
+    print(f"\nTOTAL over {total['layers']} layers: dropped = holes = {holes}/{total_slots} slots "
+          f"({total['dropped_ratio']:.1%}), blocks with holes {total['blocks_with_holes']}/{total['blocks']}")
+    print(f"  KV {mib(total['total_kv_bytes'])} total, {slot_bytes} B (K+V) per slot -> "
+          f"holes {mib(total['hole_bytes'])} reclaimable if holes are filled by migration, "
+          f"{mib(total['free_bytes_without_migration'])} in fully empty blocks (no migration)")
+
     pd.DataFrame(rows).to_csv(out_dir / "decisions.csv", index=False)
     (out_dir / "summary.json").write_text(json.dumps({
         "csv": args.csv, "scope": args.scope, "min_match": min_match, "elements_per_slot": n_elem,
-        "protect_first": args.protect_first, "layers": summary,
+        "protect_first": args.protect_first, "total": total, "layers": summary,
     }, indent=2))
     (out_dir / "merges.json").write_text(json.dumps({
         "scope": args.scope, "min_match": min_match, "elements_per_slot": n_elem,
