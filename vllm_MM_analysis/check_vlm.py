@@ -8,7 +8,7 @@ static background) and a synthetic image are used, so no dataset is needed.
 
 Example (from vllm_MM_analysis/):
     python check_vlm.py --model LLaVA-OneVision-7B
-    python check_vlm.py --model Qwen2.5-VL-7B --video clip.mp4 --image cat.jpg
+    python check_vlm.py --model InternVL3-8B --video clip.mp4 --image cat.jpg
 """
 
 from __future__ import annotations
@@ -22,7 +22,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from models import OUTPUT_ROOT, VLM_SPECS, build_prompt, model_path
+from models import (OUTPUT_ROOT, VLM_SPECS, build_prompt, engine_extra, model_path,
+                    stop_token_ids, vision_token_id)
+from video_io import load_video
 
 VIDEO_QUESTION = "Describe what happens in this video in one sentence."
 IMAGE_QUESTION = "Describe this image in one sentence."
@@ -45,25 +47,6 @@ def synthetic_image(size: int = 384) -> Image.Image:
     img = np.full((size, size, 3), 245, np.uint8)
     img[size // 4:3 * size // 4, size // 4:3 * size // 4] = (20, 60, 220)
     return Image.fromarray(img)
-
-
-def load_video(path: str, num_frames: int) -> np.ndarray:
-    import cv2
-
-    cap = cv2.VideoCapture(path)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if not cap.isOpened() or total <= 0:
-        raise SystemExit(f"cannot read video: {path}")
-    frames = []
-    for idx in np.linspace(0, total - 1, num_frames).round().astype(int):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-        ok, frame = cap.read()
-        if ok:
-            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    cap.release()
-    if not frames:
-        raise SystemExit(f"no frames decoded from {path}")
-    return np.stack(frames)
 
 
 def token_runs(token_ids: list[int], target: int) -> list[list[int]]:
@@ -109,27 +92,28 @@ def main() -> None:
     llm = LLM(model=str(path), max_model_len=args.max_model_len,
               limit_mm_per_prompt={"video": 1, "image": 1},
               gpu_memory_utilization=args.gpu_memory_utilization,
-              enforce_eager=True, seed=0)
+              enforce_eager=True, seed=0, **engine_extra(args.model))
     print(f"engine ready in {time.time() - t0:.0f}s")
 
+    tokenizer = llm.get_tokenizer()
     requests = [
-        ("video", {"prompt": build_prompt(args.model, "video", VIDEO_QUESTION),
+        ("video", {"prompt": build_prompt(args.model, "video", VIDEO_QUESTION, tokenizer),
                    "multi_modal_data": {"video": video}}),
-        ("image", {"prompt": build_prompt(args.model, "image", IMAGE_QUESTION),
+        ("image", {"prompt": build_prompt(args.model, "image", IMAGE_QUESTION, tokenizer),
                    "multi_modal_data": {"image": image}}),
     ]
-    params = SamplingParams(temperature=0.0, max_tokens=args.max_tokens)
+    params = SamplingParams(temperature=0.0, max_tokens=args.max_tokens,
+                            stop_token_ids=stop_token_ids(args.model, tokenizer))
     t0 = time.time()
     outputs = llm.generate([r for _, r in requests], params)
     print(f"generated in {time.time() - t0:.1f}s")
 
-    tokenizer = llm.get_tokenizer()
     report = {"vllm": vllm.__version__, "model": args.model,
               "video_source": args.video or "synthetic", "num_frames": int(video.shape[0]),
               "image_source": args.image or "synthetic", "results": []}
     for (modality, _), out in zip(requests, outputs):
-        placeholder = VLM_SPECS[args.model]["placeholder"][modality]
-        placeholder_id = tokenizer.convert_tokens_to_ids(placeholder)
+        placeholder = VLM_SPECS[args.model]["vision_token"][modality]
+        placeholder_id = vision_token_id(args.model, modality, tokenizer)
         ids = list(out.prompt_token_ids)
         runs = token_runs(ids, placeholder_id)
         n_vision = sum(e - s for s, e in runs)
