@@ -20,7 +20,7 @@ results/<model>/<dataset>/problem<N>/ (problem<N>_<method> for non-fullkv):
 With --method triattention the dump is the compacted cache after the last
 compression (positions are no longer contiguous); fullkv is the baseline.
 
-Example (from vllm_runner/):
+Example (from vllm_CoT_analysis/):
     python kv_dump.py --model Qwen3-8B --dataset aime24 --problem 0
     python kv_dump.py --model Qwen3-8B --dataset quick
 """
@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
         help="Also dump the cache every N KV tokens during generation (0 = final only).",
     )
     p.add_argument("--output-dir", default=None,
-                   help="Default: vllm_runner/results/<model>/<dataset>/problem<N>")
+                   help="Default: vllm_CoT_analysis/results/<model>/<dataset>/problem<N>")
     p.add_argument("--skip-eval", action="store_true")
     p.add_argument("--prefix-caching", action="store_true",
                    help="Enable vLLM prefix caching (fullkv only). With one request per engine "

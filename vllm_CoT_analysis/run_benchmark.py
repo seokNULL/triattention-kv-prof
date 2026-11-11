@@ -40,7 +40,7 @@ from cli import (  # noqa: E402
     stats_path_for,
 )
 
-# Everything the vllm_runner tools generate: results/<model>/<dataset>/...
+# Everything the vllm_CoT_analysis tools generate: results/<model>/<dataset>/...
 OUTPUT_ROOT = Path(__file__).resolve().parent / "results"
 EVAL_SCRIPT = REPO_ROOT / "triattention" / "evaluation" / "eval_math_multi.py"
 # Same per-draw seed formula as scripts/worker.py.

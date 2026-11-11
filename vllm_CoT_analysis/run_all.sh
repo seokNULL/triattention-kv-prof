@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Generate benchmark problems with fullkv for every model and dump each one's KV cache.
-# Run from vllm_runner/:
+# Run from vllm_CoT_analysis/:
 #   bash run_all.sh                       # problem 0 of aime24, aime25, math500 x 3 models
 #   PROBLEM=3 bash run_all.sh             # another problem index
 #   PROBLEM=0-4 bash run_all.sh           # a range (inclusive)

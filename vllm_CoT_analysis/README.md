@@ -21,11 +21,11 @@
 
 모델·데이터셋 목록, 기본 budget, 통계 파일 선택, 데이터 경로는 `scripts/cli.py`의 것을 그대로 가져다 씁니다.
 
-## 0. 가장 간단한 사용법 (모든 명령은 `vllm_runner/` 안에서)
+## 0. 가장 간단한 사용법 (모든 명령은 `vllm_CoT_analysis/` 안에서)
 
 ```bash
 conda activate kv-prof-vllm
-cd ~/work/triattention-kv-prof/vllm_runner
+cd ~/work/triattention-kv-prof/vllm_CoT_analysis
 
 bash run_all.sh        # 1) 3 모델 × (aime24, aime25, math500) 문제 1개씩 fullkv 실행, 채점, KV 저장
 bash opportunity.sh    # 2) 저장된 KV 전부에 block merge 분석 → results/opportunity_summary.csv

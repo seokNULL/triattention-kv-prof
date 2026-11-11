@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the block-merge opportunity analysis on KV dumps under results/.
-# Run from vllm_runner/ after run_all.sh.
+# Run from vllm_CoT_analysis/ after run_all.sh.
 #   bash opportunity.sh                                        # every dump
 #   bash opportunity.sh --model Qwen3-8B --dataset aime24 --problem 0
 #   bash opportunity.sh --model Qwen3-8B,DeepSeek-R1-Distill-Qwen-7B --problem 0,1,2

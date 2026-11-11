@@ -22,7 +22,7 @@ Outputs (in <folder>/opportunity/, or <csv stem>_merge/ for a CSV):
     merges.json    per layer: each kept token with the tokens merged into it
                    (--with-values adds their K/V values)
 
-Example (from vllm_runner/):
+Example (from vllm_CoT_analysis/):
     python block_merge.py results/Qwen3-8B/aime24/problem0 --min-match 0.9
     python block_merge.py kv_l18.csv --min-match 900 --scope recent:4 --with-values
 """

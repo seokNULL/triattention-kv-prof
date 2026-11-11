@@ -30,7 +30,7 @@ experiments/configs/
 experiments/models/
 experiments/stats/
 experiments/*.log
-vllm_runner/results/
+vllm_CoT_analysis/results/
 logs/
 tmp_eval/
 
