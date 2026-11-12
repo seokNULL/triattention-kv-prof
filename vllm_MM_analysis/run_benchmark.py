@@ -8,10 +8,11 @@ Example (from vllm_MM_analysis/):
     python run_benchmark.py --model LLaVA-OneVision-7B --limit-per-task 10   # 200 items
     python run_benchmark.py --model Qwen2.5-VL-7B                            # all 4000
     python run_benchmark.py --model InternVL3-8B --tasks "Action Count" "Moving Count"
+    python run_benchmark.py --model LLaVA-OneVision-7B --dataset videomme --tasks short
 
 Output: results/<model>/<dataset>/benchmark/f<frames>[_<tag>]/
     generations.jsonl   one line per item (answer, prediction, prompt/vision token counts)
-    summary.json        accuracy overall and per task
+    summary.json        accuracy overall and per task (Video-MME: per video length)
 """
 
 from __future__ import annotations
@@ -26,18 +27,21 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import mvbench
+import videomme
 from models import (OUTPUT_ROOT, VLM_SPECS, build_prompt, engine_extra, model_path,
                     stop_token_ids, vision_token_id)
 from video_io import load_video
 
-DATASETS = {"mvbench": mvbench}
+DATASETS = {"mvbench": mvbench, "videomme": videomme}
+LETTERS = "ABCDEFGH"
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--model", required=True, choices=list(VLM_SPECS))
     p.add_argument("--dataset", default="mvbench", choices=list(DATASETS))
-    p.add_argument("--tasks", nargs="+", choices=list(mvbench.TASKS), help="Default: all tasks.")
+    p.add_argument("--tasks", nargs="+",
+                   help="MVBench task names, or Video-MME lengths (short medium long). Default: all.")
     p.add_argument("--limit-per-task", type=int, help="First N items of each task.")
     p.add_argument("--num-frames", type=int, default=16)
     p.add_argument("--batch-size", type=int, default=16, help="Videos decoded per generate call.")
@@ -56,7 +60,7 @@ def run_dir_for(args: argparse.Namespace) -> Path:
 
 def extract_letter(text: str, num_options: int) -> str | None:
     """First option letter in the answer, e.g. 'B', '(B)', 'B. text', 'Answer: B'."""
-    letters = mvbench.LETTERS[:num_options]
+    letters = LETTERS[:num_options]
     text = text.strip()
     for pattern in (rf"^\(?([{letters}])(?![A-Za-z])", rf"\(([{letters}])\)",
                     rf"(?<![A-Za-z])([{letters}])(?![A-Za-z])"):
@@ -102,7 +106,8 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     gen_path = run_dir / "generations.jsonl"
     done = load_done(gen_path)
-    todo = [it for it in items if it["id"] not in done]
+    # Same-video questions (Video-MME has 3 per video) land in one batch and are decoded once.
+    todo = sorted((it for it in items if it["id"] not in done), key=lambda it: it["video"])
     print(f"{len(items)} items, {len(done)} already done, {len(todo)} to run -> {run_dir}")
 
     if todo:
@@ -116,13 +121,15 @@ def main() -> None:
         params = SamplingParams(temperature=0.0, max_tokens=args.max_tokens,
                                 stop_token_ids=stop_token_ids(args.model, tokenizer))
         vis_id = vision_token_id(args.model, "video", tokenizer)
-        decode = lambda it: load_video(it["video"], args.num_frames, it["bound"])  # noqa: E731
+        decode = lambda key: load_video(key[0], args.num_frames, key[1])  # noqa: E731
 
         t0 = time.time()
         with ThreadPoolExecutor(8) as pool, gen_path.open("a") as out:
             for start in range(0, len(todo), args.batch_size):
                 batch = todo[start:start + args.batch_size]
-                videos = list(pool.map(_safe(decode), batch))
+                keys = list(dict.fromkeys((it["video"], it["bound"]) for it in batch))
+                decoded = dict(zip(keys, pool.map(_safe(decode), keys)))
+                videos = [decoded[(it["video"], it["bound"])] for it in batch]
                 ok = [(it, v) for it, v in zip(batch, videos) if not isinstance(v, Exception)]
                 for it, v in zip(batch, videos):
                     if isinstance(v, Exception):

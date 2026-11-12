@@ -2,11 +2,34 @@
 
 from __future__ import annotations
 
+import os
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+# Containers whose header frame count and seeking are reliable enough for long videos.
+SEEKABLE = {".mp4", ".mkv", ".mov", ".avi"}
+
+
+class VideoIndex:
+    """Find a video file or frame folder by name anywhere under root."""
+
+    def __init__(self, root: Path):
+        self.by_name: dict[str, list[Path]] = defaultdict(list)
+        for dirpath, dirnames, filenames in os.walk(root):
+            for name in filenames + dirnames:
+                self.by_name[name].append(Path(dirpath) / name)
+
+    def find(self, video: str, prefer: str = "") -> Path | None:
+        """Path named like video; among several, one whose path contains prefer."""
+        paths = self.by_name.get(Path(video).name, [])
+        for preferred in (f"{prefer}/{video}", video, prefer):
+            hits = [p for p in paths if preferred and preferred in p.as_posix()]
+            if hits:
+                return hits[0]
+        return paths[0] if paths else None
 
 
 def sample_indices(total: int, num_frames: int, first: int = 0, last: int | None = None) -> list[int]:
@@ -50,14 +73,42 @@ def load_video(path: str | Path, num_frames: int, bound=None, frame_fps: float =
     if not cap.isOpened():
         raise ValueError(f"cannot open video {path}")
     fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
-    # Frame counts in webm/gif headers are unreliable: count by grabbing.
+    header_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if path.suffix.lower() in SEEKABLE and header_total > 0:
+        wanted = sample_indices(header_total, num_frames, *_bound_frames(bound, fps, header_total))
+        frames = _read_by_seek(cap, wanted)
+        cap.release()
+        if len(frames) == len(wanted):
+            return np.stack(frames)
+        cap = cv2.VideoCapture(str(path))
+    frames = _read_by_grab(cap, path, num_frames, bound, fps)
+    cap.release()
+    return np.stack(frames)
+
+
+def _read_by_seek(cap, indices: list[int]) -> list[np.ndarray]:
+    import cv2
+
+    frames = []
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = cap.read()
+        if not ok:
+            break
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    return frames
+
+
+def _read_by_grab(cap, path: Path, num_frames: int, bound, fps: float) -> list[np.ndarray]:
+    """Count frames by grabbing (webm/gif headers are unreliable), then decode the sampled ones."""
+    import cv2
+
     total = 0
     while cap.grab():
         total += 1
     if total == 0:
         raise ValueError(f"no frames in {path}")
-    first, last = _bound_frames(bound, fps, total)
-    wanted = set(sample_indices(total, num_frames, first, last))
+    wanted = set(sample_indices(total, num_frames, *_bound_frames(bound, fps, total)))
     cap.release()
     cap = cv2.VideoCapture(str(path))
     frames = []
@@ -71,4 +122,4 @@ def load_video(path: str | Path, num_frames: int, bound=None, frame_fps: float =
     cap.release()
     if not frames:
         raise ValueError(f"no frames decoded from {path}")
-    return np.stack(frames)
+    return frames

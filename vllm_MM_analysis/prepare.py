@@ -8,6 +8,7 @@ MVBench is gated: accept its terms on the Hugging Face page and log in
 Example (from vllm_MM_analysis/):
     python prepare.py --models LLaVA-OneVision-7B --skip-datasets
     python prepare.py --skip-models --datasets mvbench --ca-bundle /path/to/company-ca.pem
+    python prepare.py --skip-models --datasets videomme --patterns "*.parquet" "videos_chunked_0[1-2].zip"
     python prepare.py            # all models and datasets
 """
 
@@ -19,10 +20,11 @@ import zipfile
 from pathlib import Path
 
 import mvbench
+import videomme
 from models import MODELS_DIR, VLM_SPECS
 
 MODEL_PATTERNS = ["*.json", "*.safetensors", "*.txt", "*.model", "*.tiktoken", "*.jinja", "*.py"]
-DATASETS = {"mvbench": mvbench}
+DATASETS = {"mvbench": mvbench, "videomme": videomme}
 
 
 def set_ca_bundle(path: str) -> None:
@@ -65,7 +67,7 @@ def download_dataset(name: str, patterns: list[str] | None, delete_zips: bool) -
     module = DATASETS[name]
     print(f"[download] dataset {module.HF_REPO} -> {module.ROOT}")
     snapshot_download(repo_id=module.HF_REPO, repo_type="dataset", local_dir=str(module.ROOT),
-                      allow_patterns=patterns or ["json/*", "video/*"])
+                      allow_patterns=patterns or module.DEFAULT_PATTERNS)
     extract_archives(module.ROOT, delete_zips)
 
 
@@ -76,7 +78,8 @@ def main() -> None:
     p.add_argument("--skip-models", action="store_true")
     p.add_argument("--skip-datasets", action="store_true")
     p.add_argument("--patterns", nargs="+",
-                   help="Dataset files to fetch (default: json/* video/*), e.g. 'video/clevrer*'.")
+                   help="Dataset files to fetch, e.g. 'json/*' 'video/clevrer*' (MVBench) or "
+                   "'*.parquet' 'videos_chunked_01.zip' (Video-MME). Default: everything.")
     p.add_argument("--delete-zips", action="store_true", help="Remove archives after extracting.")
     p.add_argument("--ca-bundle", help="PEM bundle for TLS-intercepting proxies.")
     p.add_argument("--force", action="store_true", help="Download models even if present.")

@@ -56,3 +56,4 @@ example/
 longlive/__pycache__/
 vllm_MM_analysis/results/
 data/mvbench/
+data/videomme/

@@ -16,6 +16,7 @@ DATA_DIR = REPO_ROOT / "data"
 # template: prompt with {media} and {question}; None means the tokenizer's chat template.
 # placeholder: text put in the prompt per modality.
 # vision_token: token vLLM expands the placeholder into (one per vision-token position).
+# temporal_patch: frames merged into one group of video tokens (default 1).
 VLM_SPECS = {
     "LLaVA-OneVision-7B": {
         "repo": "llava-hf/llava-onevision-qwen2-7b-ov-hf",
@@ -32,6 +33,7 @@ VLM_SPECS = {
         ),
         "placeholder": {"video": "<|video_pad|>", "image": "<|image_pad|>"},
         "vision_token": {"video": "<|video_pad|>", "image": "<|image_pad|>"},
+        "temporal_patch": 2,  # two frames share one set of video tokens
     },
     "InternVL3-8B": {
         "repo": "OpenGVLab/InternVL3-8B",

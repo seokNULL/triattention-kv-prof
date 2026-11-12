@@ -10,14 +10,13 @@ evaluation uses for the task.
 from __future__ import annotations
 
 import json
-import os
-from collections import defaultdict
-from pathlib import Path
 
 from models import DATA_DIR
+from video_io import VideoIndex
 
 ROOT = DATA_DIR / "mvbench"
 HF_REPO = "OpenGVLab/MVBench"
+DEFAULT_PATTERNS = ["json/*", "video/*"]
 
 # task -> (json file, source folder used by the official evaluation, uses start/end)
 TASKS = {
@@ -51,24 +50,6 @@ INSTRUCTION = (
 LETTERS = "ABCDEFGH"
 
 
-class VideoIndex:
-    """Map a video name from the json to a file or frame folder under video_root."""
-
-    def __init__(self, video_root: Path):
-        self.by_name: dict[str, list[Path]] = defaultdict(list)
-        for dirpath, dirnames, filenames in os.walk(video_root):
-            for name in filenames + dirnames:
-                self.by_name[name].append(Path(dirpath) / name)
-
-    def find(self, video: str, source: str) -> Path | None:
-        paths = self.by_name.get(Path(video).name, [])
-        for preferred in (f"{source}/{video}", video, source):
-            hits = [p for p in paths if p.as_posix().endswith(preferred) or preferred in p.as_posix()]
-            if hits:
-                return hits[0]
-        return paths[0] if paths else None
-
-
 def format_question(item: dict) -> str:
     options = "\n".join(f"({LETTERS[i]}) {c}" for i, c in enumerate(item["candidates"]))
     return (f"{INSTRUCTION}\nQuestion: {item['question']}\nOptions:\n{options}\n"
@@ -76,14 +57,19 @@ def format_question(item: dict) -> str:
 
 
 def load(tasks: list[str] | None = None, limit_per_task: int | None = None) -> tuple[list[dict], dict]:
-    """Return (items, missing_count_per_task). Each item has an id, task, path and prompt text."""
+    """Return (items, missing_count_per_task). Each item has an id, task, video path and prompt text."""
     json_dir, video_root = ROOT / "json", ROOT / "video"
     if not json_dir.is_dir():
         raise SystemExit(f"MVBench not found at {ROOT}\nRun: python prepare.py --datasets mvbench")
     index = VideoIndex(video_root)
     items, missing = [], {}
     for task in tasks or TASKS:
+        if task not in TASKS:
+            raise SystemExit(f"unknown MVBench task {task!r}; choose from {list(TASKS)}")
         json_name, source, bounded = TASKS[task]
+        if not (json_dir / json_name).exists():
+            print(f"[warn] {json_dir / json_name} missing, task {task!r} skipped")
+            continue
         rows = json.loads((json_dir / json_name).read_text())
         if limit_per_task:
             rows = rows[:limit_per_task]
