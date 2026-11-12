@@ -2,14 +2,13 @@
 """How many K slots of one KV block get merged by cosine similarity vs by bit match.
 
 Takes one KV block (block_size consecutive tokens, block t // block_size) of
-one layer of a kv_dump.py result. Tokens arrive in order, as in
-block_merge.py: a new token is compared with the kept earlier tokens of the
-block and merged (dropped) if its best match reaches the threshold. This is
-run twice on the same K vectors (all kv_heads x head_dim elements, e.g.
-8 x 128 = 1024), once with each criterion:
+one layer of a kv_dump.py result. Every token except the first of the block
+is compared with the token right before it (consecutive-token merging, as in
+KVMerger) on the same K vectors (all kv_heads x head_dim elements, e.g.
+8 x 128 = 1024), and counts as merged under each criterion it meets:
     cosine     cosine similarity >= --cos-threshold
     bit match  equal bf16 sign+exponent elements >= --min-match (block_merge.py)
-and the merged tokens of the two are compared. Prints only; writes nothing.
+Prints only; writes nothing.
 
 Works on vllm_CoT_analysis and vllm_MM_analysis dumps. Example (from vllm_CoT_analysis/):
     python block_similarity.py results/Qwen3-8B/aime24/problem0 --layer 18 --block 100
@@ -60,25 +59,6 @@ def load_block(dump: Path, layer: int, block: int):
             [pieces[t] if t < len(pieces) else "" for t in range(start, end)], n_heads, head_dim)
 
 
-def sequential_merge(score: np.ndarray, threshold: float):
-    """Merge each token into its best-scoring kept earlier token if score >= threshold.
-
-    Returns (merged_into per token, -1 if kept; best score against kept earlier tokens).
-    """
-    n = len(score)
-    kept = np.ones(n, dtype=bool)
-    merged_into = np.full(n, -1)
-    best = np.full(n, np.nan)
-    for i in range(1, n):
-        cand = np.flatnonzero(kept[:i])
-        j = cand[int(score[i, cand].argmax())]
-        best[i] = score[i, j]
-        if best[i] >= threshold:
-            kept[i] = False
-            merged_into[i] = j
-    return merged_into, best
-
-
 def main() -> None:
     args = parse_args()
     dump = Path(args.dump)
@@ -86,31 +66,28 @@ def main() -> None:
     n_elem = n_heads * head_dim
     match_t = int(round(args.min_match * n_elem)) if args.min_match <= 1 else int(args.min_match)
 
+    # Similarity of token i with token i - 1 (index 0: no previous token in the block).
     unit = k / np.maximum(np.linalg.norm(k, axis=1, keepdims=True), 1e-30)
-    cos = unit @ unit.T
+    cos_prev = np.r_[np.nan, (unit[1:] * unit[:-1]).sum(axis=1)]
     se = sign_exponent(k)
-    match = (se[:, None, :] == se[None, :, :]).sum(axis=2)
-
-    into_cos, best_cos = sequential_merge(cos, args.cos_threshold)
-    into_bit, best_bit = sequential_merge(match, match_t)
-    by_cos, by_bit = into_cos >= 0, into_bit >= 0
+    bit_prev = np.r_[0, (se[1:] == se[:-1]).sum(axis=1)]
+    by_cos = np.r_[False, cos_prev[1:] >= args.cos_threshold]
+    by_bit = np.r_[False, bit_prev[1:] >= match_t]
 
     print(f"{dump}  layer {args.layer}  block {args.block} (tokens {tokens[0]}-{tokens[-1]}), "
           f"K {n_heads}x{head_dim} = {n_elem} elements")
     print(f"criteria: cosine >= {args.cos_threshold}  |  bit match >= {match_t}/{n_elem} "
           f"({match_t / n_elem:.0%})\n")
-    print(f"{'token':>7} {'piece':<16} {'best cos':>8} {'merged (cos)':>13} "
-          f"{'best bit':>9} {'merged (bit)':>13}")
+    print("each token vs the previous token of the block")
+    print(f"{'token':>7} {'piece':<16} {'cos(prev)':>9} {'merged':>7} {'bit(prev)':>15} {'merged':>7}")
     for i, t in enumerate(tokens):
         if i == 0:
-            print(f"{t:>7} {pieces[i]!r:<16} {'(first token of the block, always kept)':>45}")
+            print(f"{t:>7} {pieces[i]!r:<16} {'(first token of the block: no previous token)':>45}")
             continue
-        cos_col = f"-> {tokens[into_cos[i]]}" if by_cos[i] else "kept"
-        bit_col = f"-> {tokens[into_bit[i]]}" if by_bit[i] else "kept"
-        print(f"{t:>7} {pieces[i]!r:<16} {best_cos[i]:>8.3f} {cos_col:>13} "
-              f"{int(best_bit[i]):>5} ({best_bit[i] / n_elem:>4.0%}) {bit_col:>9}")
+        print(f"{t:>7} {pieces[i]!r:<16} {cos_prev[i]:>9.3f} {'yes' if by_cos[i] else '-':>7} "
+              f"{int(bit_prev[i]):>7} ({bit_prev[i] / n_elem:>4.0%}) {'yes' if by_bit[i] else '-':>7}")
 
-    print(f"\nmerged K slots (of {len(tokens)})")
+    print(f"\nmerged K slots (of {len(tokens)}; {len(tokens) - 1} compared)")
     print(f"  by cosine     {int(by_cos.sum()):>3}")
     print(f"  by bit match  {int(by_bit.sum()):>3}")
     print(f"  by both       {int((by_cos & by_bit).sum()):>3}")
