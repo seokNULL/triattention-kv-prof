@@ -9,6 +9,7 @@
 #   MODELS="Qwen3-8B" DATASETS="aime24" bash run_all.sh
 #   PREFIX_CACHING=1 bash run_all.sh      # enable vLLM prefix caching (off by default)
 #   SKIP_EXISTING=1 PROBLEM=all bash run_all.sh   # skip problems that already have kv.pt
+#   DATASETS=longbench_v2_short MODELS="Qwen3-8B" PROBLEM=0-4 bash run_all.sh
 # Results: results/<model>/<dataset>/problem<N>/ (kv.pt, tokens.json, meta.json, eval/ ...)
 set -euo pipefail
 

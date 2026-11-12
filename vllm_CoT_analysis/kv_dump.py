@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Generate one benchmark problem with vLLM, grade it, and dump its paged KV cache.
 
-Runs a single request (one problem of aime24/aime25/math500, or of the
-bundled quick set) so its blocks are not reused by other requests, records
+Runs a single request (one problem of aime24/aime25/math500, of LongBench v2
+(longbench_v2_short/medium/long, see run_longbench.py), or of the bundled quick set) so its blocks are not reused by other requests, records
 the request's block table after every engine step, and after generation
 copies its K/V out of vLLM's paged cache into
 results/<model>/<dataset>/problem<N>/ (problem<N>_<method> for non-fullkv):
@@ -23,6 +23,7 @@ compression (positions are no longer contiguous); fullkv is the baseline.
 Example (from vllm_CoT_analysis/):
     python kv_dump.py --model Qwen3-8B --dataset aime24 --problem 0
     python kv_dump.py --model Qwen3-8B --dataset quick
+    python kv_dump.py --model Qwen3-8B --dataset longbench_v2_short --problem 0
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from pathlib import Path
 import cloudpickle
 import torch
 
+import longbench
 from quick_test import build_settings
 from run_benchmark import (
     DATASETS,
@@ -67,10 +69,12 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--model", required=True, choices=list(MODEL_SPECS))
     p.add_argument("--method", default="fullkv", choices=["fullkv", "triattention"])
-    p.add_argument("--dataset", default=QUICK, choices=DATASETS + [QUICK])
+    p.add_argument("--dataset", default=QUICK, choices=DATASETS + [QUICK] + longbench.DATASETS)
     p.add_argument("--problem", type=int, default=0, help="Problem index (row) in the dataset.")
     p.add_argument("--max-length", type=int, default=None,
-                   help="Prompt + generation tokens (default: aime 32768, math500 8192, quick 4096).")
+                   help="Prompt + generation tokens (default: aime/longbench 32768, math500 8192, quick 4096).")
+    p.add_argument("--max-new-tokens", type=int, default=longbench.MAX_NEW_TOKENS,
+                   help="LongBench: tokens reserved for generation; the context is cut to fit the rest.")
     p.add_argument(
         "--layers",
         default="all",
@@ -227,13 +231,17 @@ def _dump_final(worker_wrapper, out_dir):
 def main() -> None:
     args = parse_args()
     quick = args.dataset == QUICK
-    eval_dataset = QUICK_EVAL_DATASET if quick else args.dataset
+    lb = longbench.is_longbench(args.dataset)
+    eval_dataset = QUICK_EVAL_DATASET if quick or lb else args.dataset
     if args.max_length is None:
-        args.max_length = QUICK_MAX_LENGTH if quick else dataset_max_length(
-            args.dataset, load_runner_defaults())
+        args.max_length = QUICK_MAX_LENGTH if quick else longbench.MAX_LENGTH if lb else (
+            dataset_max_length(args.dataset, load_runner_defaults()))
     settings = build_settings(args)
     settings["dataset"] = args.dataset
-    if not quick:
+    if lb:
+        settings.update(dataset_path=str(longbench.dataset_path(args.dataset)),
+                        max_new_tokens=args.max_new_tokens, chat_template=True)
+    elif not quick:
         settings["dataset_path"] = str(resolve_dataset_path(args.dataset))
     if args.method == "triattention":
         settings["stats_path"] = str(stats_path_for(eval_dataset, args.model, args.budget, announce=False))
@@ -255,10 +263,15 @@ def main() -> None:
     from vllm import LLM
 
     tokenizer = AutoTokenizer.from_pretrained(settings["model_path"], use_fast=True)
-    rows = load_problems(settings)
+    rows = longbench.load_rows(args.dataset) if lb else load_problems(settings)
     if not 0 <= args.problem < len(rows):
         raise SystemExit(f"--problem must be in [0, {len(rows) - 1}] ({settings['dataset_path']})")
-    (request,) = build_requests([rows[args.problem]], tokenizer, settings)
+    if lb:
+        from run_longbench import build_request
+
+        request = build_request(rows[args.problem], tokenizer, settings)
+    else:
+        (request,) = build_requests([rows[args.problem]], tokenizer, settings)
 
     llm = LLM(**engine_kwargs(settings, args))
     (cache_info,) = llm.collective_rpc(
@@ -293,6 +306,8 @@ def main() -> None:
         "problem": args.problem,
         "question": rows[args.problem]["question"],
         "answer": rows[args.problem]["answer"],
+        **({k: rows[args.problem][k] for k in ("_id", "domain", "sub_domain", "difficulty", "length")}
+           if lb else {}),
         "output_text": completion.text,
         "finish_reason": completion.finish_reason,
         "num_prompt_tokens": len(request["prompt_token_ids"]),
@@ -308,6 +323,18 @@ def main() -> None:
 
     gen_dir = out_dir / "generations"
     gen_dir.mkdir(exist_ok=True)
+    if lb:
+        from run_longbench import make_record as longbench_record
+
+        record = longbench_record(request, completion)
+        (gen_dir / "generations.jsonl").write_text(json.dumps(record, ensure_ascii=False) + "\n")
+        meta.update(prediction=record["prediction"], correct=record["correct"],
+                    context_tokens_removed=request["context_tokens_removed"])
+        (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+        print(f"[kv-dump] answer {record['answer']} prediction {record['prediction']}, "
+              f"{request['context_tokens_removed']} context tokens cut")
+        print(f"[kv-dump] wrote {out_dir}")
+        return
     (gen_dir / "generations.jsonl").write_text(
         json.dumps(make_record(request, completion, 0.0), ensure_ascii=False) + "\n")
     if not args.skip_eval:

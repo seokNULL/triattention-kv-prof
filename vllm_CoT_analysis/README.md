@@ -1,4 +1,4 @@
-# vLLM runner (AIME24 / AIME25 / MATH-500)
+# vLLM runner (AIME24 / AIME25 / MATH-500 / LongBench v2)
 
 `scripts/cli.py run-one`(HF transformers 경로)과 같은 모델·데이터셋·프롬프트·샘플링·seed·채점기를 쓰되,
 생성을 **vLLM의 paged KV cache**로 하는 실행기입니다. `--method triattention`이면
@@ -18,6 +18,9 @@
 | `hole_analysis.py` | 유사한 토큰을 합쳤을 때 생기는 hole을 vLLM layout 단위로 수치화하고 그래프 5개로 저장 |
 | `analyze_kv_dump.py` | dump에서 KV 유사도와 (가상의) hole 비율을 계산하는 예시 분석 |
 | `data/quick.jsonl` | `quick_test.py`, `kv_dump.py`용 문제 8개 (정답은 정수) |
+| `prepare_longbench.py` | LongBench v2를 받아 `data/longbench_v2_{short,medium,long}.jsonl`로 저장 |
+| `run_longbench.py` | LongBench v2 정확도 (4지선다, CoT 후 `The correct answer is (X)`), 영역·난이도별 |
+| `longbench.py` | LongBench v2 프롬프트, 문맥 가운데 자르기, 답 추출, 집계 |
 
 모델·데이터셋 목록, 기본 budget, 통계 파일 선택, 데이터 경로는 `scripts/cli.py`의 것을 그대로 가져다 씁니다.
 
@@ -52,6 +55,20 @@ results/
 
 KV 크기는 토큰당 Qwen3-8B 144KB, DS-Llama-8B 128KB, DS-Qwen-7B 56KB입니다.
 AIME 문제는 생성이 수만 토큰이라 dump 하나가 수 GB가 될 수 있습니다.
+
+### LongBench v2 (긴 문맥 + CoT)
+
+```bash
+python prepare_longbench.py --ca-bundle <pem>                         # data/longbench_v2_*.jsonl
+python run_longbench.py --model Qwen3-8B --dataset longbench_v2_short --max-examples 10
+DATASETS=longbench_v2_short PROBLEM=0-4 bash run_all.sh              # 3개 모델 KV dump
+bash opportunity.sh --dataset longbench_v2_short --min-match 0.5
+```
+
+- 모델 chat template(thinking 켬)에 공식 0-shot 프롬프트를 씁니다.
+- 기본 `--max-length 32768`(prompt + 생성), 생성용으로 `--max-new-tokens 8192`를 남기고
+  문맥이 더 길면 **가운데를 잘라** 앞·뒤 절반을 남깁니다(공식 평가 방식). 잘린 토큰 수는 결과에 기록됩니다.
+- `opportunity_summary.csv`에 LongBench 영역(`domain`)과 prompt / 생성 토큰별 hole 비율이 함께 나옵니다.
 
 ## 1. 환경: `kv-prof`를 복제해서 vLLM 설치
 
