@@ -34,6 +34,9 @@ VLM_SPECS = {
         "placeholder": {"video": "<|video_pad|>", "image": "<|image_pad|>"},
         "vision_token": {"video": "<|video_pad|>", "image": "<|image_pad|>"},
         "temporal_patch": 2,  # two frames share one set of video tokens
+        # Frames keep their resolution up to the image limit (~16k tokens per frame
+        # pair), so a 1080p clip overflows the context; cap pixels per frame.
+        "max_pixels": 448 * 448,  # ~256 video tokens per frame pair
     },
     "InternVL3-8B": {
         "repo": "OpenGVLab/InternVL3-8B",
@@ -53,8 +56,23 @@ def model_path(name: str) -> Path:
     return path
 
 
-def engine_extra(name: str) -> dict:
-    return {"trust_remote_code": True} if VLM_SPECS[name].get("trust_remote_code") else {}
+def engine_extra(name: str, max_model_len: int | None = None, max_pixels: int | None = None) -> dict:
+    """Model-specific LLM() arguments.
+
+    Args:
+        name: Model name in VLM_SPECS.
+        max_model_len: Context limit; None keeps the model's own maximum.
+        max_pixels: Pixels per frame for models that resize by area (Qwen2.5-VL);
+            None uses the default in VLM_SPECS.
+    """
+    spec = VLM_SPECS[name]
+    extra = {"trust_remote_code": True} if spec.get("trust_remote_code") else {}
+    if max_model_len:
+        extra["max_model_len"] = max_model_len
+    pixels = max_pixels or spec.get("max_pixels")
+    if pixels:
+        extra["mm_processor_kwargs"] = {"max_pixels": pixels}
+    return extra
 
 
 def build_prompt(name: str, modality: str, question: str, tokenizer) -> str:

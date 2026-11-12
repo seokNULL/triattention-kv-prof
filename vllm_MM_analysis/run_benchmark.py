@@ -45,7 +45,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--limit-per-task", type=int, help="First N items of each task.")
     p.add_argument("--num-frames", type=int, default=16)
     p.add_argument("--batch-size", type=int, default=16, help="Videos decoded per generate call.")
-    p.add_argument("--max-model-len", type=int, default=32768)
+    p.add_argument("--max-model-len", type=int, default=None,
+                   help="Context limit (default: the model's maximum).")
+    p.add_argument("--max-pixels", type=int, default=None,
+                   help="Pixels per frame for Qwen2.5-VL (default 448*448); others resize to a fixed size.")
     p.add_argument("--max-tokens", type=int, default=16)
     p.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     p.add_argument("--enforce-eager", action="store_true")
@@ -113,10 +116,12 @@ def main() -> None:
     if todo:
         from vllm import LLM, SamplingParams
 
-        llm = LLM(model=str(model_path(args.model)), max_model_len=args.max_model_len,
-                  limit_mm_per_prompt={"video": 1}, seed=0,
+        llm = LLM(model=str(model_path(args.model)), limit_mm_per_prompt={"video": 1}, seed=0,
                   gpu_memory_utilization=args.gpu_memory_utilization,
-                  enforce_eager=args.enforce_eager, **engine_extra(args.model))
+                  enforce_eager=args.enforce_eager,
+                  **engine_extra(args.model, args.max_model_len, args.max_pixels))
+        config = getattr(getattr(llm, "llm_engine", None), "model_config", None)
+        print(f"max_model_len {getattr(config, 'max_model_len', '?')}")
         tokenizer = llm.get_tokenizer()
         params = SamplingParams(temperature=0.0, max_tokens=args.max_tokens,
                                 stop_token_ids=stop_token_ids(args.model, tokenizer))
@@ -124,6 +129,7 @@ def main() -> None:
         decode = lambda key: load_video(key[0], args.num_frames, key[1])  # noqa: E731
 
         t0 = time.time()
+        too_long: dict[str, str] = {}
         with ThreadPoolExecutor(8) as pool, gen_path.open("a") as out:
             for start in range(0, len(todo), args.batch_size):
                 batch = todo[start:start + args.batch_size]
@@ -136,8 +142,12 @@ def main() -> None:
                         print(f"[warn] {it['id']}: {v}")
                 prompts = [{"prompt": build_prompt(args.model, "video", it["question"], tokenizer),
                             "multi_modal_data": {"video": v}} for it, v in ok]
-                outputs = llm.generate(prompts, params, use_tqdm=False) if prompts else []
+                outputs = generate_each_on_error(llm, prompts, params)
                 for (it, v), o in zip(ok, outputs):
+                    if isinstance(o, Exception):
+                        too_long[it["id"]] = str(o)
+                        print(f"[warn] {it['id']} skipped: {o}")
+                        continue
                     text = o.outputs[0].text
                     pred = extract_letter(text, len(it["candidates"]))
                     rec = {"id": it["id"], "task": it["task"], "answer": it["answer"],
@@ -148,11 +158,16 @@ def main() -> None:
                     done[it["id"]] = rec
                 out.flush()
                 n = min(start + args.batch_size, len(todo))
-                acc = sum(r["correct"] for r in done.values()) / len(done)
+                acc = sum(r["correct"] for r in done.values()) / max(len(done), 1)
                 print(f"[{n}/{len(todo)}] {time.time() - t0:.0f}s, running accuracy {acc:.3f}")
 
     records = [done[it["id"]] for it in items if it["id"] in done]
     summary = summarize(records, missing, args)
+    if todo and too_long:
+        summary["skipped_errors"] = too_long
+        print(f"[warn] {len(too_long)} items skipped (prompt too long for max_model_len?); "
+              "see skipped_errors in summary.json. Lower --num-frames / --max-pixels or raise "
+              "--max-model-len, then re-run to fill them in.")
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
     print(f"\n{args.model} {args.dataset}: accuracy {summary['accuracy']:.3f} "
           f"({summary['items']} items, task mean {summary['task_mean_accuracy']:.3f}, "
@@ -160,6 +175,18 @@ def main() -> None:
     for task, s in summary["per_task"].items():
         print(f"  {task:<26} {s['accuracy']:.3f}  ({s['items']})")
     print(f"wrote {run_dir / 'summary.json'}")
+
+
+def generate_each_on_error(llm, prompts, params) -> list:
+    """llm.generate on the batch; if it is rejected, retry one by one and return the errors in place."""
+    if not prompts:
+        return []
+    try:
+        return llm.generate(prompts, params, use_tqdm=False)
+    except ValueError as e:
+        if len(prompts) == 1:
+            return [e]
+        return [o for p in prompts for o in generate_each_on_error(llm, [p], params)]
 
 
 def _safe(fn):

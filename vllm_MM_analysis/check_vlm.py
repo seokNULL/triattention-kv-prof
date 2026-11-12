@@ -67,7 +67,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--video", help="Video file (default: synthetic clip).")
     p.add_argument("--image", help="Image file (default: synthetic image).")
     p.add_argument("--num-frames", type=int, default=16)
-    p.add_argument("--max-model-len", type=int, default=32768)
+    p.add_argument("--max-model-len", type=int, default=None,
+                   help="Context limit (default: the model's maximum).")
+    p.add_argument("--max-pixels", type=int, default=None,
+                   help="Pixels per frame for Qwen2.5-VL (default 448*448); others resize to a fixed size.")
     p.add_argument("--max-tokens", type=int, default=64)
     p.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     return p.parse_args()
@@ -89,10 +92,11 @@ def main() -> None:
     print(f"video {args.video or 'synthetic'}: {video.shape} | image {args.image or 'synthetic'}: {image.size}")
 
     t0 = time.time()
-    llm = LLM(model=str(path), max_model_len=args.max_model_len,
+    llm = LLM(model=str(path),
               limit_mm_per_prompt={"video": 1, "image": 1},
               gpu_memory_utilization=args.gpu_memory_utilization,
-              enforce_eager=True, seed=0, **engine_extra(args.model))
+              enforce_eager=True, seed=0,
+              **engine_extra(args.model, args.max_model_len, args.max_pixels))
     print(f"engine ready in {time.time() - t0:.0f}s")
 
     tokenizer = llm.get_tokenizer()

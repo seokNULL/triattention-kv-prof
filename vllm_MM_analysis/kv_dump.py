@@ -49,7 +49,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--id", help="Item id instead of --item, e.g. action_count/3 (see generations.jsonl).")
     p.add_argument("--num-frames", type=int, default=16)
     p.add_argument("--layers", default="all", help="'all' or a comma list such as 0,9,18,27.")
-    p.add_argument("--max-model-len", type=int, default=32768)
+    p.add_argument("--max-model-len", type=int, default=None,
+                   help="Context limit (default: the model's maximum).")
+    p.add_argument("--max-pixels", type=int, default=None,
+                   help="Pixels per frame for Qwen2.5-VL (default 448*448); others resize to a fixed size.")
     p.add_argument("--max-tokens", type=int, default=16)
     p.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     p.add_argument("--output-dir", help="Default: results/<model>/<dataset>/f<frames>/<item id>")
@@ -123,10 +126,10 @@ def main() -> None:
 
     from vllm import LLM, SamplingParams
 
-    llm = LLM(model=str(model_path(args.model)), max_model_len=args.max_model_len,
-              limit_mm_per_prompt={"video": 1}, seed=0, enforce_eager=True,
-              enable_prefix_caching=False, gpu_memory_utilization=args.gpu_memory_utilization,
-              **engine_extra(args.model))
+    llm = LLM(model=str(model_path(args.model)), limit_mm_per_prompt={"video": 1}, seed=0,
+              enforce_eager=True, enable_prefix_caching=False,
+              gpu_memory_utilization=args.gpu_memory_utilization,
+              **engine_extra(args.model, args.max_model_len, args.max_pixels))
     (cache_info,) = llm.collective_rpc(kv_tracker.install_tracker, args=(layers,))
     print(f"[kv-dump] kv cache per layer: {cache_info}")
     tokenizer = llm.get_tokenizer()

@@ -37,6 +37,11 @@ accuracy; writes `results/<model>/mvbench/benchmark/f16/{generations.jsonl,summa
 Re-running resumes. Tasks whose videos are not found are reported and skipped.
 Video-MME items are grouped by video length (short / medium / long) instead of task.
 
+Context: the model's own maximum (`--max-model-len` to change). Qwen2.5-VL keeps
+frame resolution, so frames are capped at 448*448 pixels (~256 tokens per frame
+pair, `--max-pixels` to change). Items still too long are skipped and listed in
+`summary.json` (`skipped_errors`); a re-run retries them.
+
 ## 3. KV dump and block-merge opportunity
 
 ```bash
