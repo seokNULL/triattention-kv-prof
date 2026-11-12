@@ -18,6 +18,7 @@
 | `hole_analysis.py` | 유사한 토큰을 합쳤을 때 생기는 hole을 vLLM layout 단위로 수치화하고 그래프 5개로 저장 |
 | `analyze_kv_dump.py` | dump에서 KV 유사도와 (가상의) hole 비율을 계산하는 예시 분석 |
 | `data/quick.jsonl` | `quick_test.py`, `kv_dump.py`용 문제 8개 (정답은 정수) |
+| `block_similarity.py` | block 1개 안 16개 K의 모든 쌍에서 cosine similarity vs bit 일치 수(부호+지수) 비교: CSV, 히트맵, 산점도 |
 | `prepare_longbench.py` | LongBench v2를 받아 `data/longbench_v2_{short,medium,long}.jsonl`로 저장 |
 | `run_longbench.py` | LongBench v2 정확도 (4지선다, CoT 후 `The correct answer is (X)`), 영역·난이도별 |
 | `longbench.py` | LongBench v2 프롬프트, 문맥 가운데 자르기, 답 추출, 집계 |
